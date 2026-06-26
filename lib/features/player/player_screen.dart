@@ -20,6 +20,7 @@ import '../channels/channel_debug_dialog.dart';
 import 'player_control_bar.dart';
 import 'player_service.dart';
 import 'stream_info_badges.dart';
+import 'fullscreen_helper.dart';
 
 /// Full-screen video player with overlay controls and keyboard navigation.
 class PlayerScreen extends ConsumerStatefulWidget {
@@ -89,9 +90,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (widget.channels.isNotEmpty) {
       final ch = widget.channels[_channelIndex];
       _groupTitle = ch['groupTitle']?.toString();
-      _providerName = ref.read(streamAlternativesProvider).providerName(ch['providerId']?.toString() ?? '');
+      _providerName = ref
+          .read(streamAlternativesProvider)
+          .providerName(ch['providerId']?.toString() ?? '');
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    FullscreenHelper.enterFullscreen();
     _startPlayback();
     _autoHideOverlay();
     _loadEpgInfo();
@@ -183,13 +187,24 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     if (isShowStream ||
         !(playerService.player.state.playing ||
             playerService.player.state.buffering)) {
-      playerService.play(urls[_currentUrlIndex],
-        channelId: widget.channels.isNotEmpty ? widget.channels[_channelIndex]['id'] as String? : null,
-        epgChannelId: widget.channels.isNotEmpty ? widget.channels[_channelIndex]['epgChannelId'] as String? : null,
-        tvgId: widget.channels.isNotEmpty ? widget.channels[_channelIndex]['tvgId'] as String? : null,
+      playerService.play(
+        urls[_currentUrlIndex],
+        channelId: widget.channels.isNotEmpty
+            ? widget.channels[_channelIndex]['id'] as String?
+            : null,
+        epgChannelId: widget.channels.isNotEmpty
+            ? widget.channels[_channelIndex]['epgChannelId'] as String?
+            : null,
+        tvgId: widget.channels.isNotEmpty
+            ? widget.channels[_channelIndex]['tvgId'] as String?
+            : null,
         channelName: _currentChannelName,
-        vanityName: widget.channels.isNotEmpty ? widget.channels[_channelIndex]['vanityName'] as String? : null,
-        originalName: widget.channels.isNotEmpty ? widget.channels[_channelIndex]['tvgName'] as String? : null,
+        vanityName: widget.channels.isNotEmpty
+            ? widget.channels[_channelIndex]['vanityName'] as String?
+            : null,
+        originalName: widget.channels.isNotEmpty
+            ? widget.channels[_channelIndex]['tvgName'] as String?
+            : null,
       );
     }
 
@@ -214,9 +229,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _switchToNextStream() {
     setState(() => _currentUrlIndex++);
     final urls = [widget.streamUrl, ...widget.alternativeUrls];
-    ref.read(playerServiceProvider).play(urls[_currentUrlIndex],
-      channelName: _currentChannelName,
-    );
+    ref
+        .read(playerServiceProvider)
+        .play(urls[_currentUrlIndex], channelName: _currentChannelName);
   }
 
   Future<void> _showCastPicker() async {
@@ -252,7 +267,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       _audioTracks = tracks.audio
           .where((t) => t.id != 'auto' && t.id != 'no')
           .toList();
-      _subtitlesEnabled = player.state.track.subtitle.id != 'no' &&
+      _subtitlesEnabled =
+          player.state.track.subtitle.id != 'no' &&
           player.state.track.subtitle.id != 'auto';
     });
   }
@@ -289,15 +305,37 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 children: [
                   Icon(Icons.closed_caption, color: Colors.white, size: 20),
                   SizedBox(width: 8),
-                  Text('Subtitles', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                  Text(
+                    'Subtitles',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 8),
               ListTile(
                 dense: true,
-                leading: Icon(Icons.block, color: currentId == 'no' ? Colors.greenAccent : Colors.white54, size: 20),
-                title: const Text('Off', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                trailing: currentId == 'no' ? const Icon(Icons.check, color: Colors.greenAccent, size: 18) : null,
+                leading: Icon(
+                  Icons.block,
+                  color: currentId == 'no'
+                      ? Colors.greenAccent
+                      : Colors.white54,
+                  size: 20,
+                ),
+                title: const Text(
+                  'Off',
+                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+                trailing: currentId == 'no'
+                    ? const Icon(
+                        Icons.check,
+                        color: Colors.greenAccent,
+                        size: 18,
+                      )
+                    : null,
                 onTap: () {
                   player.setSubtitleTrack(SubtitleTrack.no());
                   setState(() => _subtitlesEnabled = false);
@@ -310,12 +348,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   dense: true,
                   title: Text(
                     t.title ?? t.language ?? t.id,
-                    style: TextStyle(color: isActive ? Colors.white : Colors.white70, fontSize: 13),
+                    style: TextStyle(
+                      color: isActive ? Colors.white : Colors.white70,
+                      fontSize: 13,
+                    ),
                   ),
                   subtitle: t.language != null
-                      ? Text(t.language!, style: const TextStyle(color: Colors.white38, fontSize: 11))
+                      ? Text(
+                          t.language!,
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 11,
+                          ),
+                        )
                       : null,
-                  trailing: isActive ? const Icon(Icons.check, color: Colors.greenAccent, size: 18) : null,
+                  trailing: isActive
+                      ? const Icon(
+                          Icons.check,
+                          color: Colors.greenAccent,
+                          size: 18,
+                        )
+                      : null,
                   onTap: () {
                     player.setSubtitleTrack(t);
                     setState(() => _subtitlesEnabled = true);
@@ -351,7 +404,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 children: [
                   Icon(Icons.audiotrack, color: Colors.white, size: 20),
                   SizedBox(width: 8),
-                  Text('Audio Tracks', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                  Text(
+                    'Audio Tracks',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 8),
@@ -361,12 +421,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   dense: true,
                   title: Text(
                     t.title ?? t.language ?? t.id,
-                    style: TextStyle(color: isActive ? Colors.white : Colors.white70, fontSize: 13),
+                    style: TextStyle(
+                      color: isActive ? Colors.white : Colors.white70,
+                      fontSize: 13,
+                    ),
                   ),
                   subtitle: t.language != null
-                      ? Text(t.language!, style: const TextStyle(color: Colors.white38, fontSize: 11))
+                      ? Text(
+                          t.language!,
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 11,
+                          ),
+                        )
                       : null,
-                  trailing: isActive ? const Icon(Icons.check, color: Colors.greenAccent, size: 18) : null,
+                  trailing: isActive
+                      ? const Icon(
+                          Icons.check,
+                          color: Colors.greenAccent,
+                          size: 18,
+                        )
+                      : null,
                   onTap: () {
                     player.setAudioTrack(t);
                     Navigator.of(ctx).pop();
@@ -455,24 +530,28 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _switchChannel(int delta) {
     if (widget.channels.isEmpty) return;
     setState(() {
-      _channelIndex =
-          (_channelIndex + delta) % widget.channels.length;
+      _channelIndex = (_channelIndex + delta) % widget.channels.length;
       if (_channelIndex < 0) _channelIndex += widget.channels.length;
       final ch = widget.channels[_channelIndex];
       _currentChannelName = ch['name'] as String? ?? '';
       _currentChannelLogo = ch['tvgLogo'] as String?;
       _groupTitle = ch['groupTitle']?.toString();
-      _providerName = ref.read(streamAlternativesProvider).providerName(ch['providerId']?.toString() ?? '');
+      _providerName = ref
+          .read(streamAlternativesProvider)
+          .providerName(ch['providerId']?.toString() ?? '');
       _currentUrlIndex = 0;
       _showOverlay = true;
     });
     final ch = widget.channels[_channelIndex];
-    ref.read(playerServiceProvider).play(ch['streamUrl'] as String? ?? '',
-      channelId: ch['id'] as String?,
-      epgChannelId: ch['epgChannelId'] as String?,
-      tvgId: ch['tvgId'] as String?,
-      channelName: ch['name'] as String?,
-    );
+    ref
+        .read(playerServiceProvider)
+        .play(
+          ch['streamUrl'] as String? ?? '',
+          channelId: ch['id'] as String?,
+          epgChannelId: ch['epgChannelId'] as String?,
+          tvgId: ch['tvgId'] as String?,
+          channelName: ch['name'] as String?,
+        );
     _autoHideOverlay();
     _loadEpgInfo();
     _loadFavoriteState();
@@ -494,6 +573,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void dispose() {
     _overlayTimer?.cancel();
     _volumeTimer?.cancel();
+    FullscreenHelper.exitFullscreen();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
@@ -514,281 +594,380 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           },
           child: GestureDetector(
             onTap: _toggleOverlay,
+            onDoubleTap: () {
+              // Exit fullscreen is handled in dispose; just navigate back
+              GoRouter.of(context).canPop()
+                  ? GoRouter.of(context).pop()
+                  : GoRouter.of(context).go('/');
+            },
             child: Stack(
               fit: StackFit.expand,
               children: [
-              // Video — fill entire screen
-              Video(controller: playerService.videoController, controls: NoVideoControls),
+                // Video — fill entire screen
+                Video(
+                  controller: playerService.videoController,
+                  controls: NoVideoControls,
+                ),
 
-              // TiviMate-style control bar overlay
-              PlayerControlBar(
-                isCasting: ref.read(castServiceProvider).isCasting,
-                isFavorite: _isFavorite,
-                hasSubtitles: _subtitleTracks.isNotEmpty,
-                subtitlesEnabled: _subtitlesEnabled,
-                onSubtitleToggle: _toggleSubtitles,
-                onSubtitleSelect: _showSubtitlePicker,
-                audioTrackCount: _audioTracks.length,
-                onAudioSelect: _showAudioPicker,
-                onCastTap: () => _showCastPicker(),
-                onBackTap: () {
-                  GoRouter.of(context).canPop()
-                      ? GoRouter.of(context).pop()
-                      : GoRouter.of(context).go('/');
-                },
-                onScreenshot: _takeScreenshot,
-                onFavorite: _toggleFavorite,
-                onPip: _enterPip,
-                onInfo: _showInfoDialog,
-                onRename: _renameCurrentChannel,
-                onSettings: () => GoRouter.of(context).push('/settings'),
-                onChannelList: () => setState(() => _showChannelList = !_showChannelList),
-              ),
+                // TiviMate-style control bar overlay
+                PlayerControlBar(
+                  isCasting: ref.read(castServiceProvider).isCasting,
+                  isFavorite: _isFavorite,
+                  hasSubtitles: _subtitleTracks.isNotEmpty,
+                  subtitlesEnabled: _subtitlesEnabled,
+                  onSubtitleToggle: _toggleSubtitles,
+                  onSubtitleSelect: _showSubtitlePicker,
+                  audioTrackCount: _audioTracks.length,
+                  onAudioSelect: _showAudioPicker,
+                  onCastTap: () => _showCastPicker(),
+                  onBackTap: () {
+                    GoRouter.of(context).canPop()
+                        ? GoRouter.of(context).pop()
+                        : GoRouter.of(context).go('/');
+                  },
+                  onScreenshot: _takeScreenshot,
+                  onFavorite: _toggleFavorite,
+                  onPip: _enterPip,
+                  onInfo: _showInfoDialog,
+                  onRename: _renameCurrentChannel,
+                  onSettings: () => GoRouter.of(context).push('/settings'),
+                  onChannelList: () =>
+                      setState(() => _showChannelList = !_showChannelList),
+                ),
 
-              // Channel info overlay (top, shown alongside control bar)
-              if (_showOverlay) ...[
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(48, 4, 12, 12),
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.black87,
-                          Colors.black54,
-                          Colors.transparent,
-                        ],
-                        stops: [0.0, 0.7, 1.0],
+                // Channel info overlay (top, shown alongside control bar)
+                if (_showOverlay) ...[
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(48, 4, 12, 12),
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.black87,
+                            Colors.black54,
+                            Colors.transparent,
+                          ],
+                          stops: [0.0, 0.7, 1.0],
+                        ),
                       ),
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Col 1: Channel name + group
-                        if (_currentChannelLogo != null)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: Image.network(
-                              _currentChannelLogo!,
-                              width: 24,
-                              height: 24,
-                              errorBuilder: (c, e, s) => const SizedBox(),
-                            ),
-                          ),
-                        Expanded(
-                          flex: 2,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                _currentChannelName,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                overflow: TextOverflow.ellipsis,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Col 1: Channel name + group
+                          if (_currentChannelLogo != null)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: Image.network(
+                                _currentChannelLogo!,
+                                width: 24,
+                                height: 24,
+                                errorBuilder: (c, e, s) => const SizedBox(),
                               ),
-                              if (_groupTitle != null && _groupTitle!.isNotEmpty)
-                                Text(
-                                  _groupTitle!,
-                                  style: const TextStyle(color: Colors.white38, fontSize: 11),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        // Col 2: Programme name + time + next
-                        Expanded(
-                          flex: 2,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (_nowPlayingTitle != null) ...[
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(Icons.play_circle_outline, size: 14, color: Colors.cyanAccent),
-                                    const SizedBox(width: 4),
-                                    Flexible(
-                                      child: Text(
-                                        _nowPlayingTitle!,
-                                        style: const TextStyle(color: Colors.white, fontSize: 13),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                if (_nowPlayingTime != null)
-                                  Text(
-                                    _nowPlayingTime!,
-                                    style: const TextStyle(color: Colors.white38, fontSize: 11),
-                                  ),
-                              ],
-                              if (_nextTitle != null) ...[
-                                const SizedBox(height: 2),
-                                Text(
-                                  'Next: $_nextTitle${_nextTime != null ? '  $_nextTime' : ''}',
-                                  style: const TextStyle(color: Colors.white38, fontSize: 10),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        // Col 3: Description
-                        Expanded(
-                          flex: 3,
-                          child: (_nowDescription != null && _nowDescription!.isNotEmpty)
-                              ? Text(
-                                  _nowDescription!,
-                                  style: const TextStyle(color: Colors.white54, fontSize: 11),
-                                  maxLines: 3,
-                                  overflow: TextOverflow.ellipsis,
-                                )
-                              : const SizedBox.shrink(),
-                        ),
-                        const SizedBox(width: 16),
-                        // Col 4: Stream badges + provider + time
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Row(
+                            ),
+                          Expanded(
+                            flex: 2,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                StreamInfoBadges(playerService: ref.read(playerServiceProvider)),
-                                if (_providerName != null && _providerName!.isNotEmpty) ...[
-                                  const SizedBox(width: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF6C5CE7).withValues(alpha: 0.3),
-                                      borderRadius: BorderRadius.circular(4),
-                                      border: Border.all(color: const Color(0xFF6C5CE7), width: 0.5),
+                                Text(
+                                  _currentChannelName,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                if (_groupTitle != null &&
+                                    _groupTitle!.isNotEmpty)
+                                  Text(
+                                    _groupTitle!,
+                                    style: const TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 11,
                                     ),
-                                    child: Text(_providerName!,
-                                        style: const TextStyle(fontSize: 10, color: Color(0xFFA29BFE), fontWeight: FontWeight.w600)),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          // Col 2: Programme name + time + next
+                          Expanded(
+                            flex: 2,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_nowPlayingTitle != null) ...[
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.play_circle_outline,
+                                        size: 14,
+                                        color: Colors.cyanAccent,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Flexible(
+                                        child: Text(
+                                          _nowPlayingTitle!,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  if (_nowPlayingTime != null)
+                                    Text(
+                                      _nowPlayingTime!,
+                                      style: const TextStyle(
+                                        color: Colors.white38,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                ],
+                                if (_nextTitle != null) ...[
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Next: $_nextTitle${_nextTime != null ? '  $_nextTime' : ''}',
+                                    style: const TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 10,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ],
                               ],
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              TimeOfDay.now().format(context),
-                              style: const TextStyle(color: Colors.white38, fontSize: 11),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-
-              // Volume overlay
-              if (_showVolumeOverlay)
-                Positioned(
-                  top: 80,
-                  right: 24,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.black87,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _volume == 0
-                              ? Icons.volume_off
-                              : _volume < 50
-                                  ? Icons.volume_down
-                                  : Icons.volume_up,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '${_volume.round()}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
                           ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              // Channel list overlay
-              if (_showChannelList && widget.channels.isNotEmpty)
-                Positioned(
-                  right: 0, top: 0, bottom: 0,
-                  width: 320,
-                  child: Container(
-                    color: Colors.black.withValues(alpha: 0.85),
-                    child: Column(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.fromLTRB(16, 40, 8, 8),
-                          child: Row(
+                          const SizedBox(width: 16),
+                          // Col 3: Description
+                          Expanded(
+                            flex: 3,
+                            child:
+                                (_nowDescription != null &&
+                                    _nowDescription!.isNotEmpty)
+                                ? Text(
+                                    _nowDescription!,
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 11,
+                                    ),
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
+                          const SizedBox(width: 16),
+                          // Col 4: Stream badges + provider + time
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.list, color: Colors.white70, size: 20),
-                              const SizedBox(width: 8),
-                              const Text('Channels', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-                              const Spacer(),
-                              IconButton(
-                                icon: const Icon(Icons.close, color: Colors.white54, size: 20),
-                                onPressed: () => setState(() => _showChannelList = false),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  StreamInfoBadges(
+                                    playerService: ref.read(
+                                      playerServiceProvider,
+                                    ),
+                                  ),
+                                  if (_providerName != null &&
+                                      _providerName!.isNotEmpty) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(
+                                          0xFF6C5CE7,
+                                        ).withValues(alpha: 0.3),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(
+                                          color: const Color(0xFF6C5CE7),
+                                          width: 0.5,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        _providerName!,
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Color(0xFFA29BFE),
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                TimeOfDay.now().format(context),
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 11,
+                                ),
                               ),
                             ],
                           ),
-                        ),
-                        const Divider(height: 1, color: Colors.white10),
-                        Expanded(
-                          child: ListView.builder(
-                            itemCount: widget.channels.length,
-                            itemBuilder: (ctx, i) {
-                              final ch = widget.channels[i];
-                              final name = ch['name'] as String? ?? '';
-                              final isCurrent = i == _channelIndex;
-                              return ListTile(
-                                dense: true,
-                                selected: isCurrent,
-                                selectedTileColor: const Color(0xFF6C5CE7).withValues(alpha: 0.3),
-                                leading: ch['tvgLogo'] != null
-                                    ? Image.network(ch['tvgLogo'] as String, width: 28, height: 28, errorBuilder: (_, __, ___) => const Icon(Icons.tv, size: 28, color: Colors.white30))
-                                    : const Icon(Icons.tv, size: 28, color: Colors.white30),
-                                title: Text(name, style: TextStyle(
-                                  color: isCurrent ? Colors.white : Colors.white70,
-                                  fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-                                  fontSize: 13,
-                                ), maxLines: 1, overflow: TextOverflow.ellipsis),
-                                onTap: () {
-                                  setState(() => _showChannelList = false);
-                                  if (i != _channelIndex) {
-                                    _switchChannel(i - _channelIndex);
-                                  }
-                                },
-                              );
-                            },
-                          ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
+                ],
+
+                // Volume overlay
+                if (_showVolumeOverlay)
+                  Positioned(
+                    top: 80,
+                    right: 24,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black87,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _volume == 0
+                                ? Icons.volume_off
+                                : _volume < 50
+                                ? Icons.volume_down
+                                : Icons.volume_up,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '${_volume.round()}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                // Channel list overlay
+                if (_showChannelList && widget.channels.isNotEmpty)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 320,
+                    child: Container(
+                      color: Colors.black.withValues(alpha: 0.85),
+                      child: Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.fromLTRB(16, 40, 8, 8),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.list,
+                                  color: Colors.white70,
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Channels',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const Spacer(),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.close,
+                                    color: Colors.white54,
+                                    size: 20,
+                                  ),
+                                  onPressed: () =>
+                                      setState(() => _showChannelList = false),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Divider(height: 1, color: Colors.white10),
+                          Expanded(
+                            child: ListView.builder(
+                              itemCount: widget.channels.length,
+                              itemBuilder: (ctx, i) {
+                                final ch = widget.channels[i];
+                                final name = ch['name'] as String? ?? '';
+                                final isCurrent = i == _channelIndex;
+                                return ListTile(
+                                  dense: true,
+                                  selected: isCurrent,
+                                  selectedTileColor: const Color(
+                                    0xFF6C5CE7,
+                                  ).withValues(alpha: 0.3),
+                                  leading: ch['tvgLogo'] != null
+                                      ? Image.network(
+                                          ch['tvgLogo'] as String,
+                                          width: 28,
+                                          height: 28,
+                                          errorBuilder: (_, __, ___) =>
+                                              const Icon(
+                                                Icons.tv,
+                                                size: 28,
+                                                color: Colors.white30,
+                                              ),
+                                        )
+                                      : const Icon(
+                                          Icons.tv,
+                                          size: 28,
+                                          color: Colors.white30,
+                                        ),
+                                  title: Text(
+                                    name,
+                                    style: TextStyle(
+                                      color: isCurrent
+                                          ? Colors.white
+                                          : Colors.white70,
+                                      fontWeight: isCurrent
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                      fontSize: 13,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  onTap: () {
+                                    setState(() => _showChannelList = false);
+                                    if (i != _channelIndex) {
+                                      _switchChannel(i - _channelIndex);
+                                    }
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -805,17 +984,27 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       final dir = Platform.isMacOS || Platform.isLinux || Platform.isWindows
           ? (await getDownloadsDirectory()) ?? await getTemporaryDirectory()
           : await getTemporaryDirectory();
-      final path = '${dir.path}/clubtivi_screenshot_${DateTime.now().millisecondsSinceEpoch}.png';
+      final path =
+          '${dir.path}/clubtivi_screenshot_${DateTime.now().millisecondsSinceEpoch}.png';
       final result = await ps.takeScreenshot(path);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result != null ? 'Screenshot saved: $path' : 'Screenshot not available')),
+          SnackBar(
+            content: Text(
+              result != null
+                  ? 'Screenshot saved: $path'
+                  : 'Screenshot not available',
+            ),
+          ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Screenshot failed: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Screenshot failed: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -830,7 +1019,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _showFavoriteListSheet(channelId, channelName);
   }
 
-  Future<void> _showFavoriteListSheet(String channelId, String channelName) async {
+  Future<void> _showFavoriteListSheet(
+    String channelId,
+    String channelName,
+  ) async {
     final database = ref.read(databaseProvider);
     final listsForChannel = await database.getListsForChannel(channelId);
     final checkedIds = listsForChannel.map((l) => l.id).toSet();
@@ -853,12 +1045,20 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.star_rounded, color: Colors.amber, size: 20),
+                      const Icon(
+                        Icons.star_rounded,
+                        color: Colors.amber,
+                        size: 20,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           'Add "$channelName" to list',
-                          style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
@@ -869,7 +1069,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 16),
                       child: Center(
-                        child: Text('No favorite lists yet', style: TextStyle(color: Colors.white38)),
+                        child: Text(
+                          'No favorite lists yet',
+                          style: TextStyle(color: Colors.white38),
+                        ),
                       ),
                     ),
                   ..._favoriteLists.map((list) {
@@ -878,14 +1081,22 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                       dense: true,
                       value: isInList,
                       activeColor: const Color(0xFFE17055),
-                      title: Text('★ ${list.name}',
-                          style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                      title: Text(
+                        '★ ${list.name}',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13,
+                        ),
+                      ),
                       onChanged: (val) async {
                         if (val == true) {
                           await database.addChannelToList(list.id, channelId);
                           checkedIds.add(list.id);
                         } else {
-                          await database.removeChannelFromList(list.id, channelId);
+                          await database.removeChannelFromList(
+                            list.id,
+                            channelId,
+                          );
                           checkedIds.remove(list.id);
                         }
                         setSheetState(() {});
@@ -907,7 +1118,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     },
                     icon: const Icon(Icons.add_rounded, size: 18),
                     label: const Text('Create new list'),
-                    style: TextButton.styleFrom(foregroundColor: Colors.cyanAccent),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.cyanAccent,
+                    ),
                   ),
                   const SizedBox(height: 8),
                 ],
@@ -930,7 +1143,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A2E),
-        title: const Text('New Favorite List', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'New Favorite List',
+          style: TextStyle(color: Colors.white),
+        ),
         content: TextField(
           autofocus: true,
           style: const TextStyle(color: Colors.white),
@@ -942,8 +1158,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.of(ctx).pop(name.trim()), child: const Text('Create')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(name.trim()),
+            child: const Text('Create'),
+          ),
         ],
       ),
     );
@@ -976,9 +1198,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       } catch (_) {}
     }
 
-    final originalName = ch['tvgName']?.toString() ?? ch['originalName']?.toString() ?? ch['name']?.toString() ?? '';
+    final originalName =
+        ch['tvgName']?.toString() ??
+        ch['originalName']?.toString() ??
+        ch['name']?.toString() ??
+        '';
     final currentVanity = vanityNames[channelId];
-    final controller = TextEditingController(text: currentVanity ?? ch['name']?.toString() ?? originalName);
+    final controller = TextEditingController(
+      text: currentVanity ?? ch['name']?.toString() ?? originalName,
+    );
 
     if (!mounted) return;
     final result = await showDialog<String>(
@@ -989,8 +1217,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Original: $originalName',
-                style: const TextStyle(fontSize: 12, color: Colors.white54)),
+            Text(
+              'Original: $originalName',
+              style: const TextStyle(fontSize: 12, color: Colors.white54),
+            ),
             const SizedBox(height: 12),
             TextFormField(
               controller: controller,
@@ -1006,8 +1236,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               child: const Text('Reset to Original'),
             ),
           TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, controller.text.trim()),
             child: const Text('Save'),
@@ -1031,12 +1262,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     // Update in-memory channel map and displayed name
     if (!mounted) return;
     setState(() {
-      widget.channels[_channelIndex]['vanityName'] =
-          vanityNames[channelId];
+      widget.channels[_channelIndex]['vanityName'] = vanityNames[channelId];
       widget.channels[_channelIndex]['name'] =
           vanityNames[channelId] ?? originalName;
-      _currentChannelName =
-          vanityNames[channelId] ?? originalName;
+      _currentChannelName = vanityNames[channelId] ?? originalName;
     });
   }
 
@@ -1060,20 +1289,31 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       );
       final ps = ref.read(playerServiceProvider);
       final epgId = ch['epgId']?.toString();
-      final alts = ref.read(streamAlternativesProvider).getAlternativeDetails(
-        channelId: ch['id']?.toString() ?? '',
-        epgChannelId: epgId,
-        tvgId: ch['tvgId']?.toString(),
-        channelName: ch['name']?.toString(),
-        vanityName: ch['vanityName']?.toString(),
-        originalName: ch['tvgName']?.toString(),
-        excludeUrl: ch['streamUrl']?.toString() ?? '',
+      final alts = ref
+          .read(streamAlternativesProvider)
+          .getAlternativeDetails(
+            channelId: ch['id']?.toString() ?? '',
+            epgChannelId: epgId,
+            tvgId: ch['tvgId']?.toString(),
+            channelName: ch['name']?.toString(),
+            vanityName: ch['vanityName']?.toString(),
+            originalName: ch['tvgName']?.toString(),
+            excludeUrl: ch['streamUrl']?.toString() ?? '',
+          );
+      ChannelDebugDialog.show(
+        context,
+        channel,
+        ps,
+        mappedEpgId: epgId,
+        originalName:
+            ch['tvgName']?.toString() ??
+            ch['originalName']?.toString() ??
+            ch['name']?.toString(),
+        currentProviderName: ref
+            .read(streamAlternativesProvider)
+            .providerName(ch['providerId']?.toString() ?? ''),
+        alternatives: alts,
       );
-      ChannelDebugDialog.show(context, channel, ps,
-          mappedEpgId: epgId,
-          originalName: ch['tvgName']?.toString() ?? ch['originalName']?.toString() ?? ch['name']?.toString(),
-          currentProviderName: ref.read(streamAlternativesProvider).providerName(ch['providerId']?.toString() ?? ''),
-          alternatives: alts);
     } catch (e) {
       debugPrint('Error showing info dialog: $e');
     }

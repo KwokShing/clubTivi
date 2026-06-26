@@ -17,14 +17,8 @@ import '../data/models/show.dart';
 GoRouter createRouter() {
   // Routes that live inside the TV sidebar shell
   final sidebarRoutes = [
-    GoRoute(
-      path: '/',
-      builder: (context, state) => const ChannelsScreen(),
-    ),
-    GoRoute(
-      path: '/guide',
-      builder: (context, state) => const GuideScreen(),
-    ),
+    GoRoute(path: '/', builder: (context, state) => const ChannelsScreen()),
+    GoRoute(path: '/guide', builder: (context, state) => const GuideScreen()),
     GoRoute(
       path: '/providers',
       builder: (context, state) => const ProvidersScreen(),
@@ -45,10 +39,7 @@ GoRouter createRouter() {
 
   // Routes outside the shell (player, shows detail, splash, etc.)
   final standaloneRoutes = [
-    GoRoute(
-      path: '/splash',
-      builder: (context, state) => const SplashScreen(),
-    ),
+    GoRoute(path: '/splash', builder: (context, state) => const SplashScreen()),
     GoRoute(
       path: '/player',
       builder: (context, state) {
@@ -67,10 +58,7 @@ GoRouter createRouter() {
         );
       },
     ),
-    GoRoute(
-      path: '/shows',
-      builder: (context, state) => const ShowsScreen(),
-    ),
+    GoRoute(path: '/shows', builder: (context, state) => const ShowsScreen()),
     GoRoute(
       path: '/shows/:id',
       builder: (context, state) {
@@ -83,7 +71,7 @@ GoRouter createRouter() {
 
   if (PlatformInfo.isTV) {
     return GoRouter(
-      initialLocation: '/splash',
+      initialLocation: '/',
       routes: [
         ShellRoute(
           builder: (context, state, child) => TvShell(child: child),
@@ -96,11 +84,8 @@ GoRouter createRouter() {
 
   // Non-TV: flat routes (original behavior)
   return GoRouter(
-    initialLocation: '/splash',
-    routes: [
-      ...sidebarRoutes,
-      ...standaloneRoutes,
-    ],
+    initialLocation: '/',
+    routes: [...sidebarRoutes, ...standaloneRoutes],
   );
 }
 

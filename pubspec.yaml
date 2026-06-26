@@ -63,6 +63,9 @@ dependencies:
   share_plus: ^12.0.1
   palette_generator: ^0.3.3+7
 
+  # Window management (Windows/macOS/Linux fullscreen)
+  window_manager: ^0.4.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
