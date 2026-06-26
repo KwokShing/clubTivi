@@ -5,6 +5,7 @@ import 'dart:io' show Directory, File, FileMode, Platform;
 import 'package:drift/drift.dart' show Value;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -657,25 +658,29 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     if (mounted) setState(() => _epgLoading = false);
 
     // ── Background: load all provider channels incrementally ──
+    // ── Background: load all provider channels in one batch ──
     _backgroundLoading = true;
+    final allNewChannels = <db.Channel>[];
+    final existingIds = _allChannels.map((c) => c.id).toSet();
     for (final provider in providers) {
       if (!mounted) return;
       final channels = await database.getChannelsForProvider(provider.id);
       if (!mounted) return;
-      final existingIds = _allChannels.map((c) => c.id).toSet();
       final newChannels = channels
           .where((c) => !existingIds.contains(c.id))
           .toList();
+      for (final c in newChannels) {
+        existingIds.add(c.id);
+      }
+      allNewChannels.addAll(newChannels);
       _loadedProviders.add(provider.id);
-      setState(() {
-        _allChannels = [..._allChannels, ...newChannels];
-        if (_selectedGroup == 'All' ||
-            _selectedGroup == 'provider:${provider.id}' ||
-            _selectedGroup.startsWith('provgroup:${provider.id}:')) {
-          _applyFilters();
-        }
-      });
     }
+    if (!mounted) return;
+    // Single setState for all providers
+    setState(() {
+      _allChannels = [..._allChannels, ...allNewChannels];
+      _applyFilters();
+    });
     _backgroundLoading = false;
 
     // Re-index EPG with full channel set
@@ -1184,46 +1189,41 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   }
 
   /// Build fuzzy EPG cache using edit distance for unmatched channels.
-  /// Runs asynchronously to avoid blocking UI.
+  /// Runs in a background isolate to avoid blocking UI.
   void _buildFuzzyEpgCache(
     List<db.Channel> allChannels,
     Map<String, String> epgExactNames,
   ) {
-    if (epgExactNames.isEmpty) return;
+    if (epgExactNames.isEmpty || allChannels.isEmpty) return;
 
-    final epgNames = epgExactNames.keys.toList();
-    final fuzzyCache = <String, String>{};
-
+    // Collect unmatched channel names (only these need fuzzy matching)
+    final unmatchedEntries =
+        <MapEntry<String, String>>[]; // id → lowercase name
     for (final channel in allChannels) {
-      // Skip if already matched by other strategies
       if (_getEpgIdWithoutFuzzy(channel) != null) continue;
-
-      final channelName = channel.name.toLowerCase().trim();
-      if (channelName.isEmpty) continue;
-
-      // Find closest EPG name by edit distance
-      String? bestMatch;
-      int bestDistance =
-          channelName.length ~/ 2; // Max allowed: 50% of name length
-
-      for (final epgName in epgNames) {
-        final dist = _editDistance(channelName, epgName);
-        if (dist < bestDistance) {
-          bestDistance = dist;
-          bestMatch = epgName;
-        }
-      }
-
-      if (bestMatch != null) {
-        fuzzyCache[channel.id] = epgExactNames[bestMatch]!;
+      final name = channel.name.toLowerCase().trim();
+      if (name.isNotEmpty) {
+        unmatchedEntries.add(MapEntry(channel.id, name));
       }
     }
+    if (unmatchedEntries.isEmpty) return;
 
-    if (mounted && fuzzyCache.isNotEmpty) {
-      setState(() {
-        _epgFuzzyCache = fuzzyCache;
-      });
-    }
+    // Run edit distance computation in background isolate
+    final args = _FuzzyMatchArgs(
+      unmatchedEntries.map((e) => e.value).toList(),
+      unmatchedEntries.map((e) => e.key).toList(),
+      epgExactNames,
+    );
+
+    compute(_computeFuzzyMatches, args)
+        .then((result) {
+          if (mounted && result.isNotEmpty) {
+            setState(() => _epgFuzzyCache = result);
+          }
+        })
+        .catchError((e) {
+          debugPrint('[EPG] Fuzzy cache build failed: $e');
+        });
   }
 
   /// Get EPG ID without fuzzy fallback (used during fuzzy cache building).
@@ -6710,3 +6710,75 @@ class _EpgCandidate {
 class _StreamInfoBadges extends StreamInfoBadges {
   const _StreamInfoBadges({required super.playerService});
 }
+
+// ---------------------------------------------------------------------------
+// Isolate-friendly fuzzy EPG matching helpers (must be top-level)
+// ---------------------------------------------------------------------------
+
+class _FuzzyMatchArgs {
+  final List<String> channelNames; // lowercase channel names
+  final List<String> channelIds; // corresponding channel IDs
+  final Map<String, String> epgNameToId; // epg lowercase name → epg id
+
+  const _FuzzyMatchArgs(this.channelNames, this.channelIds, this.epgNameToId);
+}
+
+/// Runs in a background isolate. Returns channelId → epgId map.
+Map<String, String> _computeFuzzyMatches(_FuzzyMatchArgs args) {
+  final epgNames = args.epgNameToId.keys.toList();
+  final result = <String, String>{};
+
+  for (var i = 0; i < args.channelNames.length; i++) {
+    final channelName = args.channelNames[i];
+    final maxDist = channelName.length ~/ 3; // Max 33% edit distance
+    if (maxDist < 1) continue;
+
+    String? bestMatch;
+    int bestDistance = maxDist + 1;
+
+    for (final epgName in epgNames) {
+      // Quick length filter — skip names too different in length
+      if ((epgName.length - channelName.length).abs() > maxDist) continue;
+
+      final dist = _levenshtein(channelName, epgName, bestDistance);
+      if (dist < bestDistance) {
+        bestDistance = dist;
+        bestMatch = epgName;
+        if (dist == 0) break; // Perfect match
+      }
+    }
+
+    if (bestMatch != null && bestDistance <= maxDist) {
+      result[args.channelIds[i]] = args.epgNameToId[bestMatch]!;
+    }
+  }
+  return result;
+}
+
+/// Levenshtein with early termination when distance exceeds [maxDist].
+int _levenshtein(String a, String b, int maxDist) {
+  if (a == b) return 0;
+  if (a.isEmpty) return b.length;
+  if (b.isEmpty) return a.length;
+
+  var prev = List<int>.generate(b.length + 1, (i) => i);
+  var curr = List<int>.filled(b.length + 1, 0);
+
+  for (var i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    int rowMin = curr[0];
+    for (var j = 1; j <= b.length; j++) {
+      final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+      curr[j] = _min3(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+      if (curr[j] < rowMin) rowMin = curr[j];
+    }
+    // Early termination: if minimum in this row already exceeds max, abort
+    if (rowMin > maxDist) return maxDist + 1;
+    final tmp = prev;
+    prev = curr;
+    curr = tmp;
+  }
+  return prev[b.length];
+}
+
+int _min3(int a, int b, int c) => a < b ? (a < c ? a : c) : (b < c ? b : c);
