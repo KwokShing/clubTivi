@@ -7,6 +7,7 @@ import '../../data/datasources/parsers/m3u_parser.dart';
 import '../../data/datasources/remote/xtream_client.dart';
 import '../../data/models/channel.dart' hide Provider;
 import '../../data/services/logo_resolver_service.dart';
+import '../../data/services/epg_refresh_service.dart';
 import '../../core/feature_gate.dart';
 import 'package:dio/dio.dart';
 
@@ -130,9 +131,11 @@ class ProviderManager {
       final response = await dio.get<String>(provider.url!);
       final result = _m3uParser.parse(response.data!, providerId: provider.id);
 
-      // Auto-add EPG source from M3U header if present
+      // Auto-add EPG source from M3U header if present, then refresh it
       if (result.epgUrl != null && result.epgUrl!.isNotEmpty) {
         await _autoAddEpgSource(provider.id, provider.name, result.epgUrl!);
+        // Immediately refresh EPG data in background
+        _refreshEpgForProvider(provider.id);
       }
 
       // Debug: log per-group channel counts
@@ -195,6 +198,21 @@ class ProviderManager {
     } catch (_) {
       // Silently ignore EPG source add failures
     }
+  }
+
+  /// Refresh EPG data for a provider's auto-EPG source in background.
+  void _refreshEpgForProvider(String providerId) {
+    final sourceId = 'auto_$providerId';
+    // Fire and forget — don't block channel loading
+    Future(() async {
+      try {
+        final epgService = EpgRefreshService(_db);
+        await epgService.refreshSource(sourceId);
+        debugPrint('[EPG] Auto-refresh complete for provider $providerId');
+      } catch (e) {
+        debugPrint('[EPG] Auto-refresh failed for provider $providerId: $e');
+      }
+    });
   }
 
   Future<void> deleteProvider(String id) async {
