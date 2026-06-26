@@ -162,11 +162,16 @@ class PlayerService {
     _failoverCheckTimer?.cancel();
     _disposeWarmPlayer();
     _proxyActive = false;
-    await _streamProxy.stop();
-    await _ensureReady();
-    await player.open(Media(url));
-    await _bufferManager.applyForStream(url, this);
-    await player.setVolume(100.0);
+    try {
+      await _streamProxy.stop();
+      await _ensureReady();
+      await player.open(Media(url));
+      await _bufferManager.applyForStream(url, this);
+      await player.setVolume(100.0);
+    } catch (e) {
+      debugPrint('[Player] Error starting playback: $e');
+      return;
+    }
 
     // Check for missing audio after a brief delay and retry through
     // ffmpeg proxy if needed (fixes EAC-3 with non-standard codec tags)
@@ -187,45 +192,58 @@ class PlayerService {
     // Give mpv 3 seconds to detect audio tracks before checking
     _tracksSub =
         Stream<void>.fromFuture(
-          Future<void>.delayed(const Duration(seconds: 3)),
-        ).asyncMap((_) => player.state.tracks).listen((tracks) {
-          _tracksSub?.cancel();
-          if (_proxyActive || _currentUrl != originalUrl) return;
+              Future<void>.delayed(const Duration(seconds: 3)),
+            )
+            .asyncMap((_) => player.state.tracks)
+            .listen(
+              (tracks) {
+                _tracksSub?.cancel();
+                if (_proxyActive || _currentUrl != originalUrl) return;
 
-          final realAudio = tracks.audio
-              .where((a) => a.id != 'auto' && a.id != 'no')
-              .length;
-          if (realAudio > 0) {
-            debugPrint('[Player] Audio OK: $realAudio tracks detected');
-            return;
-          }
+                final realAudio = tracks.audio
+                    .where((a) => a.id != 'auto' && a.id != 'no')
+                    .length;
+                if (realAudio > 0) {
+                  debugPrint('[Player] Audio OK: $realAudio tracks detected');
+                  return;
+                }
 
-          // No real audio detected — try ffmpeg proxy
-          debugPrint(
-            '[Player] No audio tracks after 3s, trying ffmpeg proxy for $originalUrl',
-          );
-          _retryWithProxy(originalUrl);
-        });
+                // No real audio detected — try ffmpeg proxy
+                debugPrint(
+                  '[Player] No audio tracks after 3s, trying ffmpeg proxy for $originalUrl',
+                );
+                _retryWithProxy(originalUrl);
+              },
+              onError: (e) {
+                debugPrint('[Player] Audio check error: $e');
+              },
+            );
   }
 
   /// Re-open the stream through the local ffmpeg proxy.
   Future<void> _retryWithProxy(String originalUrl) async {
     if (_proxyActive) return; // Avoid recursive retry
-    final proxyUrl = await _streamProxy.start(originalUrl);
-    if (proxyUrl == null) {
-      debugPrint('[Player] ffmpeg proxy unavailable, keeping direct playback');
-      return;
+    try {
+      final proxyUrl = await _streamProxy.start(originalUrl);
+      if (proxyUrl == null) {
+        debugPrint(
+          '[Player] ffmpeg proxy unavailable, keeping direct playback',
+        );
+        return;
+      }
+      // Verify the stream URL hasn't changed while we were starting the proxy
+      if (_currentUrl != originalUrl) {
+        await _streamProxy.stop();
+        return;
+      }
+      _proxyActive = true;
+      debugPrint('[Player] Switching to proxied stream: $proxyUrl');
+      await player.open(Media(proxyUrl));
+      await _bufferManager.applyForStream(originalUrl, this);
+      await player.setVolume(100.0);
+    } catch (e) {
+      debugPrint('[Player] Proxy retry failed: $e');
     }
-    // Verify the stream URL hasn't changed while we were starting the proxy
-    if (_currentUrl != originalUrl) {
-      await _streamProxy.stop();
-      return;
-    }
-    _proxyActive = true;
-    debugPrint('[Player] Switching to proxied stream: $proxyUrl');
-    await player.open(Media(proxyUrl));
-    await _bufferManager.applyForStream(originalUrl, this);
-    await player.setVolume(100.0);
   }
 
   /// Whether audio tracks are available on the current stream.
@@ -513,15 +531,19 @@ class PlayerService {
   }
 
   void dispose() {
-    _bufferManager.stop();
-    _tracksSub?.cancel();
-    _bufferTrackSub?.cancel();
-    _bufferTrackTimer?.cancel();
-    _failoverCheckTimer?.cancel();
-    _disposeWarmPlayer();
-    _healthTracker?.save();
-    _streamProxy.stop();
-    _player?.dispose();
+    try {
+      _bufferManager.stop();
+      _tracksSub?.cancel();
+      _bufferTrackSub?.cancel();
+      _bufferTrackTimer?.cancel();
+      _failoverCheckTimer?.cancel();
+      _disposeWarmPlayer();
+      _healthTracker?.save();
+      _streamProxy.stop();
+      _player?.dispose();
+    } catch (e) {
+      debugPrint('[Player] Error during dispose: $e');
+    }
   }
 }
 

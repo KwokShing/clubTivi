@@ -57,6 +57,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   Map<String, String> _rawToPrefixedEpg = {}; // XMLTV channelId → prefixed id
   Map<String, String> _epgNameToId =
       {}; // normalized EPG displayName → prefixed id
+  Map<String, String> _epgExactNameToId =
+      {}; // exact lowercase EPG displayName → prefixed id
+  Map<String, String> _epgFuzzyCache =
+      {}; // channelId → epgId (edit distance match cache)
   Map<String, String> _epgCallSignToId =
       {}; // call sign (e.g. WABC) → prefixed id
   bool _showGuideView = true;
@@ -410,7 +414,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         .replaceAll(RegExp(r'\(.*?\)'), '') // (WABC), (S)
         .replaceAll(RegExp(r'\b(hd|fhd|shd|sd|4k|uhd|us|uk|ca|mx)\b'), '')
         .replaceAll(RegExp(r'us-?[a-z]*\|'), '') // US-P| prefix
-        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ') // non-alphanum → space
+        .replaceAll(
+          RegExp(r'[^\p{L}\p{N}]+', unicode: true),
+          ' ',
+        ) // keep all letters (incl. CJK) + digits
         .trim()
         .replaceAll(RegExp(r'\s+'), ' ');
   }
@@ -528,15 +535,13 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   Future<void> _ensureEpgSources() async {
     final epgService = ref.read(epgRefreshServiceProvider);
     await epgService.addDefaultSources();
-    // Refresh in background — don't block the UI
-    epgService
-        .refreshAllSources()
-        .then((_) {
-          debugPrint('[EPG] Background refresh complete');
-        })
-        .catchError((e) {
-          debugPrint('[EPG] Background refresh failed: $e');
-        });
+    // Refresh EPG in background after a delay so UI loads first
+    Future.delayed(const Duration(seconds: 10), () {
+      if (!mounted) return;
+      epgService.refreshAllSources().catchError((e) {
+        debugPrint('[EPG] Background refresh failed: $e');
+      });
+    });
   }
 
   @override
@@ -706,12 +711,18 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     final validIds = <String>{};
     final rawToPrefixed = <String, String>{};
     final epgNameToId = <String, String>{};
+    final epgExactNameToId =
+        <String, String>{}; // exact lowercase displayName → id
     final epgCallSignToId = <String, String>{}; // WABC → prefixed id
     for (final src in epgSources) {
       final chs = await database.getEpgChannelsForSource(src.id);
       for (final ch in chs) {
         validIds.add(ch.id);
         rawToPrefixed[ch.channelId.toLowerCase()] = ch.id;
+        // Exact lowercase name match (important for CJK channels)
+        final exactLower = ch.displayName.toLowerCase().trim();
+        if (exactLower.isNotEmpty)
+          epgExactNameToId.putIfAbsent(exactLower, () => ch.id);
         final normName = _normalizeForEpgMatch(ch.displayName);
         if (normName.isNotEmpty) epgNameToId[normName] = ch.id;
         // Index by call sign extracted from channelId (e.g. WABC.us → WABC)
@@ -806,8 +817,12 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       _validEpgChannelIds = validIds;
       _rawToPrefixedEpg = rawToPrefixed;
       _epgNameToId = epgNameToId;
+      _epgExactNameToId = epgExactNameToId;
       _epgCallSignToId = epgCallSignToId;
     });
+
+    // Build edit-distance fuzzy cache in background for unmatched channels
+    _buildFuzzyEpgCache(allChannels, epgExactNameToId);
   }
 
   Future<void> _restoreSession() async {
@@ -1115,23 +1130,163 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   String? _getEpgId(db.Channel channel) {
     final mapped = _epgMappings[channel.id];
     if (mapped != null && mapped.isNotEmpty) return mapped;
+
+    // 1. Direct tvg-id → XMLTV channel id match
     if (channel.tvgId != null && channel.tvgId!.isNotEmpty) {
       final prefixed = _rawToPrefixedEpg[channel.tvgId!.toLowerCase()];
       if (prefixed != null) return prefixed;
     }
-    // Fallback: match by normalized channel name against EPG display names
+
+    // 2. tvg-name → XMLTV channel id match
+    if (channel.tvgName != null && channel.tvgName!.isNotEmpty) {
+      final prefixed = _rawToPrefixedEpg[channel.tvgName!.toLowerCase()];
+      if (prefixed != null) return prefixed;
+    }
+
+    // 3. Channel display name → XMLTV channel id match
+    final nameLower = channel.name.toLowerCase().trim();
+    if (nameLower.isNotEmpty) {
+      final prefixed = _rawToPrefixedEpg[nameLower];
+      if (prefixed != null) return prefixed;
+    }
+
+    // 4. Exact lowercase name match against EPG displayName
+    if (nameLower.isNotEmpty) {
+      final byExact = _epgExactNameToId[nameLower];
+      if (byExact != null) return byExact;
+    }
+
+    // 5. tvg-id → EPG displayName match
+    if (channel.tvgId != null && channel.tvgId!.isNotEmpty) {
+      final byTvgId = _epgExactNameToId[channel.tvgId!.toLowerCase()];
+      if (byTvgId != null) return byTvgId;
+    }
+
+    // 6. Normalized name match
     final normName = _normalizeForEpgMatch(channel.name);
     if (normName.isNotEmpty) {
       final byName = _epgNameToId[normName];
       if (byName != null) return byName;
     }
-    // Fallback: match by broadcast call sign (WABC, WCBS, etc.)
+
+    // 7. Broadcast call sign match (WABC, WCBS, etc.)
+    final callSign = _extractCallSign(channel.name, channel.tvgId);
+    if (callSign != null) {
+      final byCs = _epgCallSignToId[callSign];
+      if (byCs != null) return byCs;
+    }
+
+    // 8. Edit distance fuzzy match (cached in _epgFuzzyCache)
+    final fuzzy = _epgFuzzyCache[channel.id];
+    if (fuzzy != null) return fuzzy;
+
+    return null;
+  }
+
+  /// Build fuzzy EPG cache using edit distance for unmatched channels.
+  /// Runs asynchronously to avoid blocking UI.
+  void _buildFuzzyEpgCache(
+    List<db.Channel> allChannels,
+    Map<String, String> epgExactNames,
+  ) {
+    if (epgExactNames.isEmpty) return;
+
+    final epgNames = epgExactNames.keys.toList();
+    final fuzzyCache = <String, String>{};
+
+    for (final channel in allChannels) {
+      // Skip if already matched by other strategies
+      if (_getEpgIdWithoutFuzzy(channel) != null) continue;
+
+      final channelName = channel.name.toLowerCase().trim();
+      if (channelName.isEmpty) continue;
+
+      // Find closest EPG name by edit distance
+      String? bestMatch;
+      int bestDistance =
+          channelName.length ~/ 2; // Max allowed: 50% of name length
+
+      for (final epgName in epgNames) {
+        final dist = _editDistance(channelName, epgName);
+        if (dist < bestDistance) {
+          bestDistance = dist;
+          bestMatch = epgName;
+        }
+      }
+
+      if (bestMatch != null) {
+        fuzzyCache[channel.id] = epgExactNames[bestMatch]!;
+      }
+    }
+
+    if (mounted && fuzzyCache.isNotEmpty) {
+      setState(() {
+        _epgFuzzyCache = fuzzyCache;
+      });
+    }
+  }
+
+  /// Get EPG ID without fuzzy fallback (used during fuzzy cache building).
+  String? _getEpgIdWithoutFuzzy(db.Channel channel) {
+    final mapped = _epgMappings[channel.id];
+    if (mapped != null && mapped.isNotEmpty) return mapped;
+    if (channel.tvgId != null && channel.tvgId!.isNotEmpty) {
+      final prefixed = _rawToPrefixedEpg[channel.tvgId!.toLowerCase()];
+      if (prefixed != null) return prefixed;
+    }
+    if (channel.tvgName != null && channel.tvgName!.isNotEmpty) {
+      final prefixed = _rawToPrefixedEpg[channel.tvgName!.toLowerCase()];
+      if (prefixed != null) return prefixed;
+    }
+    final nameLower = channel.name.toLowerCase().trim();
+    if (nameLower.isNotEmpty) {
+      final prefixed = _rawToPrefixedEpg[nameLower];
+      if (prefixed != null) return prefixed;
+      final byExact = _epgExactNameToId[nameLower];
+      if (byExact != null) return byExact;
+    }
+    if (channel.tvgId != null && channel.tvgId!.isNotEmpty) {
+      final byTvgId = _epgExactNameToId[channel.tvgId!.toLowerCase()];
+      if (byTvgId != null) return byTvgId;
+    }
+    final normName = _normalizeForEpgMatch(channel.name);
+    if (normName.isNotEmpty) {
+      final byName = _epgNameToId[normName];
+      if (byName != null) return byName;
+    }
     final callSign = _extractCallSign(channel.name, channel.tvgId);
     if (callSign != null) {
       final byCs = _epgCallSignToId[callSign];
       if (byCs != null) return byCs;
     }
     return null;
+  }
+
+  /// Levenshtein edit distance between two strings.
+  static int _editDistance(String a, String b) {
+    if (a == b) return 0;
+    if (a.isEmpty) return b.length;
+    if (b.isEmpty) return a.length;
+
+    // Use two rows instead of full matrix for memory efficiency
+    var prev = List<int>.generate(b.length + 1, (i) => i);
+    var curr = List<int>.filled(b.length + 1, 0);
+
+    for (var i = 1; i <= a.length; i++) {
+      curr[0] = i;
+      for (var j = 1; j <= b.length; j++) {
+        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
+        curr[j] = [
+          curr[j - 1] + 1, // insert
+          prev[j] + 1, // delete
+          prev[j - 1] + cost, // replace
+        ].reduce((a, b) => a < b ? a : b);
+      }
+      final tmp = prev;
+      prev = curr;
+      curr = tmp;
+    }
+    return prev[b.length];
   }
 
   String _getProviderName(String providerId) {
@@ -1804,359 +1959,357 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
     final isNarrow = MediaQuery.of(context).size.width < 600;
 
+    if (isNarrow) {
+      // Narrow screen (iOS portrait): video fills full width, height adapts to 16:9
+      return Padding(
+        padding: EdgeInsets.zero,
+        child: AspectRatio(
+          aspectRatio: 16 / 9,
+          child: _buildVideoContainer(playerService),
+        ),
+      );
+    }
+
     return SizedBox(
       height: 200,
       child: Padding(
-        padding: EdgeInsets.only(
-          left: isNarrow ? 4 : 16,
-          right: isNarrow ? 4 : 16,
-          top: 4,
-        ),
+        padding: const EdgeInsets.only(left: 16, right: 16, top: 4),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Video preview — full width on narrow (iOS portrait), fixed 356px on desktop
-            if (isNarrow)
-              Expanded(child: _buildVideoContainer(playerService))
-            else
-              SizedBox(width: 356, child: _buildVideoContainer(playerService)),
-            if (!isNarrow) ...[
-              const SizedBox(width: 12),
-              // Programme info + controls (right side)
-              Expanded(
-                child: _previewChannel == null
-                    ? const SizedBox.shrink()
-                    : Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF16213E),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            // Top row: name+group left, badges+provider+time right
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
+            SizedBox(width: 356, child: _buildVideoContainer(playerService)),
+            const SizedBox(width: 12),
+            // Programme info + controls (right side)
+            Expanded(
+              child: _previewChannel == null
+                  ? const SizedBox.shrink()
+                  : Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF16213E),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Top row: name+group left, badges+provider+time right
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _channelDisplayName(_previewChannel!),
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    if (_previewChannel!.groupTitle != null &&
+                                        _previewChannel!.groupTitle!.isNotEmpty)
                                       Text(
-                                        _channelDisplayName(_previewChannel!),
+                                        _previewChannel!.groupTitle!,
                                         style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 15,
+                                          color: Colors.white38,
+                                          fontSize: 11,
                                         ),
                                         overflow: TextOverflow.ellipsis,
                                       ),
-                                      if (_previewChannel!.groupTitle != null &&
-                                          _previewChannel!
-                                              .groupTitle!
-                                              .isNotEmpty)
-                                        Text(
-                                          _previewChannel!.groupTitle!,
-                                          style: const TextStyle(
-                                            color: Colors.white38,
-                                            fontSize: 11,
+                                  ],
+                                ),
+                              ),
+                              // Stream info badges + provider + time
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _StreamInfoBadges(
+                                        playerService: playerService,
+                                      ),
+                                      if (_getProviderName(
+                                        _previewChannel!.providerId,
+                                      ).isNotEmpty) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 2,
                                           ),
-                                          overflow: TextOverflow.ellipsis,
+                                          decoration: BoxDecoration(
+                                            color: const Color(
+                                              0xFF6C5CE7,
+                                            ).withValues(alpha: 0.2),
+                                            borderRadius: BorderRadius.circular(
+                                              4,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            _getProviderName(
+                                              _previewChannel!.providerId,
+                                            ),
+                                            style: const TextStyle(
+                                              fontSize: 10,
+                                              color: Color(0xFF6C5CE7),
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
                                         ),
+                                      ],
                                     ],
                                   ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _formatTime(DateTime.now()),
+                                    style: const TextStyle(
+                                      color: Colors.white60,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          // Now playing
+                          if (programme != null) ...[
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.play_circle_outline,
+                                  size: 14,
+                                  color: Colors.cyanAccent,
                                 ),
-                                // Stream info badges + provider + time
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        _StreamInfoBadges(
-                                          playerService: playerService,
-                                        ),
-                                        if (_getProviderName(
-                                          _previewChannel!.providerId,
-                                        ).isNotEmpty) ...[
-                                          const SizedBox(width: 6),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 6,
-                                              vertical: 2,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: const Color(
-                                                0xFF6C5CE7,
-                                              ).withValues(alpha: 0.2),
-                                              borderRadius:
-                                                  BorderRadius.circular(4),
-                                            ),
-                                            child: Text(
-                                              _getProviderName(
-                                                _previewChannel!.providerId,
-                                              ),
-                                              style: const TextStyle(
-                                                fontSize: 10,
-                                                color: Color(0xFF6C5CE7),
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ],
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    programme.title,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
                                     ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      _formatTime(DateTime.now()),
-                                      style: const TextStyle(
-                                        color: Colors.white60,
-                                        fontSize: 11,
-                                      ),
-                                    ),
-                                  ],
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 4),
-                            // Now playing
-                            if (programme != null) ...[
-                              Row(
+                            Text(
+                              _programmeTimeRange(
+                                    programme,
+                                    timeshiftHours:
+                                        _epgTimeshifts[_previewChannel!.id] ??
+                                        0,
+                                  ) ??
+                                  '',
+                              style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                          if (programme != null &&
+                              programme.description != null &&
+                              programme.description!.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                programme.description!,
+                                style: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 11,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          // Episode info + IMDB link
+                          if (programme != null &&
+                              programme.episodeNum != null &&
+                              programme.episodeNum!.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Builder(
+                                builder: (_) {
+                                  _resolveImdbId(programme.title);
+                                  final hasExact =
+                                      _imdbIdCache[programme.title
+                                          .toLowerCase()] !=
+                                      null;
+                                  return GestureDetector(
+                                    onTap: () => launchUrl(
+                                      Uri.parse(
+                                        _imdbUrl(
+                                          programme.title,
+                                          programme.episodeNum,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Text(
+                                          _parseEpisodeLabel(
+                                                programme.episodeNum,
+                                              ) ??
+                                              programme.episodeNum!,
+                                          style: const TextStyle(
+                                            color: Colors.white60,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          hasExact ? 'IMDb ↗' : 'IMDb 🔍',
+                                          style: const TextStyle(
+                                            color: Colors.amber,
+                                            fontSize: 11,
+                                            decoration:
+                                                TextDecoration.underline,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          // Next up
+                          if (nextProg != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: Row(
                                 children: [
-                                  const Icon(
-                                    Icons.play_circle_outline,
-                                    size: 14,
-                                    color: Colors.cyanAccent,
+                                  const Text(
+                                    'Next: ',
+                                    style: TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 11,
+                                    ),
                                   ),
-                                  const SizedBox(width: 4),
                                   Expanded(
                                     child: Text(
-                                      programme.title,
+                                      '${nextProg.title}  ${_programmeTimeRange(nextProg, timeshiftHours: _epgTimeshifts[_previewChannel!.id] ?? 0) ?? ''}',
                                       style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13,
+                                        color: Colors.white54,
+                                        fontSize: 11,
                                       ),
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
                                 ],
                               ),
-                              Text(
-                                _programmeTimeRange(
-                                      programme,
-                                      timeshiftHours:
-                                          _epgTimeshifts[_previewChannel!.id] ??
-                                          0,
-                                    ) ??
-                                    '',
-                                style: const TextStyle(
-                                  color: Colors.white38,
-                                  fontSize: 11,
+                            ),
+                          const Spacer(),
+                          // Bottom row: status + controls
+                          Row(
+                            children: [
+                              // Buffering status
+                              StreamBuilder<bool>(
+                                stream: playerService.bufferingStream,
+                                builder: (context, snapshot) {
+                                  final buffering = snapshot.data ?? false;
+                                  return Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (buffering)
+                                        const SizedBox(
+                                          width: 12,
+                                          height: 12,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 1.5,
+                                            color: Colors.orangeAccent,
+                                          ),
+                                        )
+                                      else
+                                        const Icon(
+                                          Icons.signal_cellular_alt,
+                                          size: 14,
+                                          color: Colors.green,
+                                        ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        buffering ? 'Buffering' : 'OK',
+                                        style: TextStyle(
+                                          color: buffering
+                                              ? Colors.orangeAccent
+                                              : Colors.green,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                              const SizedBox(width: 4),
+                              // Audio indicator
+                              StreamBuilder<bool>(
+                                stream: playerService.hasAudioStream,
+                                builder: (context, snapshot) {
+                                  final hasAudio = snapshot.data ?? true;
+                                  if (hasAudio) return const SizedBox.shrink();
+                                  return const Tooltip(
+                                    message: 'No audio track detected',
+                                    child: Icon(
+                                      Icons.volume_off_rounded,
+                                      size: 14,
+                                      color: Colors.redAccent,
+                                    ),
+                                  );
+                                },
+                              ),
+                              const Spacer(),
+                              // Debug info
+                              SizedBox(
+                                height: 28,
+                                width: 28,
+                                child: ExcludeFocus(
+                                  excluding: Platform.isAndroid,
+                                  child: IconButton(
+                                    onPressed: () {
+                                      if (_previewChannel == null) return;
+                                      final ps = ref.read(
+                                        playerServiceProvider,
+                                      );
+                                      ChannelDebugDialog.show(
+                                        context,
+                                        _previewChannel!,
+                                        ps,
+                                        mappedEpgId: _getEpgId(
+                                          _previewChannel!,
+                                        ),
+                                        originalName:
+                                            _previewChannel!.tvgName ??
+                                            _previewChannel!.name,
+                                        currentProviderName: ref
+                                            .read(streamAlternativesProvider)
+                                            .providerName(
+                                              _previewChannel!.providerId,
+                                            ),
+                                        alternatives: _getFailoverAlts(
+                                          _previewChannel!,
+                                        ),
+                                      );
+                                    },
+                                    icon: const Icon(
+                                      Icons.info_outline,
+                                      size: 16,
+                                    ),
+                                    padding: EdgeInsets.zero,
+                                    color: Colors.white70,
+                                    tooltip: 'Channel debug info',
+                                  ),
                                 ),
                               ),
                             ],
-                            if (programme != null &&
-                                programme.description != null &&
-                                programme.description!.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 4),
-                                child: Text(
-                                  programme.description!,
-                                  style: const TextStyle(
-                                    color: Colors.white54,
-                                    fontSize: 11,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            // Episode info + IMDB link
-                            if (programme != null &&
-                                programme.episodeNum != null &&
-                                programme.episodeNum!.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 4),
-                                child: Builder(
-                                  builder: (_) {
-                                    _resolveImdbId(programme.title);
-                                    final hasExact =
-                                        _imdbIdCache[programme.title
-                                            .toLowerCase()] !=
-                                        null;
-                                    return GestureDetector(
-                                      onTap: () => launchUrl(
-                                        Uri.parse(
-                                          _imdbUrl(
-                                            programme.title,
-                                            programme.episodeNum,
-                                          ),
-                                        ),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          Text(
-                                            _parseEpisodeLabel(
-                                                  programme.episodeNum,
-                                                ) ??
-                                                programme.episodeNum!,
-                                            style: const TextStyle(
-                                              color: Colors.white60,
-                                              fontSize: 11,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          Text(
-                                            hasExact ? 'IMDb ↗' : 'IMDb 🔍',
-                                            style: const TextStyle(
-                                              color: Colors.amber,
-                                              fontSize: 11,
-                                              decoration:
-                                                  TextDecoration.underline,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ),
-                            // Next up
-                            if (nextProg != null)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 6),
-                                child: Row(
-                                  children: [
-                                    const Text(
-                                      'Next: ',
-                                      style: TextStyle(
-                                        color: Colors.white38,
-                                        fontSize: 11,
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: Text(
-                                        '${nextProg.title}  ${_programmeTimeRange(nextProg, timeshiftHours: _epgTimeshifts[_previewChannel!.id] ?? 0) ?? ''}',
-                                        style: const TextStyle(
-                                          color: Colors.white54,
-                                          fontSize: 11,
-                                        ),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            const Spacer(),
-                            // Bottom row: status + controls
-                            Row(
-                              children: [
-                                // Buffering status
-                                StreamBuilder<bool>(
-                                  stream: playerService.bufferingStream,
-                                  builder: (context, snapshot) {
-                                    final buffering = snapshot.data ?? false;
-                                    return Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (buffering)
-                                          const SizedBox(
-                                            width: 12,
-                                            height: 12,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 1.5,
-                                              color: Colors.orangeAccent,
-                                            ),
-                                          )
-                                        else
-                                          const Icon(
-                                            Icons.signal_cellular_alt,
-                                            size: 14,
-                                            color: Colors.green,
-                                          ),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          buffering ? 'Buffering' : 'OK',
-                                          style: TextStyle(
-                                            color: buffering
-                                                ? Colors.orangeAccent
-                                                : Colors.green,
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                      ],
-                                    );
-                                  },
-                                ),
-                                const SizedBox(width: 4),
-                                // Audio indicator
-                                StreamBuilder<bool>(
-                                  stream: playerService.hasAudioStream,
-                                  builder: (context, snapshot) {
-                                    final hasAudio = snapshot.data ?? true;
-                                    if (hasAudio)
-                                      return const SizedBox.shrink();
-                                    return const Tooltip(
-                                      message: 'No audio track detected',
-                                      child: Icon(
-                                        Icons.volume_off_rounded,
-                                        size: 14,
-                                        color: Colors.redAccent,
-                                      ),
-                                    );
-                                  },
-                                ),
-                                const Spacer(),
-                                // Debug info
-                                SizedBox(
-                                  height: 28,
-                                  width: 28,
-                                  child: ExcludeFocus(
-                                    excluding: Platform.isAndroid,
-                                    child: IconButton(
-                                      onPressed: () {
-                                        if (_previewChannel == null) return;
-                                        final ps = ref.read(
-                                          playerServiceProvider,
-                                        );
-                                        ChannelDebugDialog.show(
-                                          context,
-                                          _previewChannel!,
-                                          ps,
-                                          mappedEpgId: _getEpgId(
-                                            _previewChannel!,
-                                          ),
-                                          originalName:
-                                              _previewChannel!.tvgName ??
-                                              _previewChannel!.name,
-                                          currentProviderName: ref
-                                              .read(streamAlternativesProvider)
-                                              .providerName(
-                                                _previewChannel!.providerId,
-                                              ),
-                                          alternatives: _getFailoverAlts(
-                                            _previewChannel!,
-                                          ),
-                                        );
-                                      },
-                                      icon: const Icon(
-                                        Icons.info_outline,
-                                        size: 16,
-                                      ),
-                                      padding: EdgeInsets.zero,
-                                      color: Colors.white70,
-                                      tooltip: 'Channel debug info',
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
-              ),
-            ], // end if (!isNarrow)
+                    ),
+            ),
           ],
         ),
       ),
@@ -2165,92 +2318,88 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
   /// Video container widget extracted for reuse in narrow/wide layouts.
   Widget _buildVideoContainer(dynamic playerService) {
-    return Container(
-      decoration: BoxDecoration(
+    if (_previewChannel == null) {
+      return const ColoredBox(
         color: Colors.black,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: _previewChannel == null
-          ? const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.tv_rounded, size: 48, color: Colors.white24),
-                  SizedBox(height: 8),
-                  Text(
-                    'Select a channel',
-                    style: TextStyle(color: Colors.white38, fontSize: 13),
-                  ),
-                ],
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.tv_rounded, size: 48, color: Colors.white24),
+              SizedBox(height: 8),
+              Text(
+                'Select a channel',
+                style: TextStyle(color: Colors.white38, fontSize: 13),
               ),
-            )
-          : GestureDetector(
-              onDoubleTap: () => _goFullscreen(_previewChannel!),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Video(
-                    controller: playerService.videoController,
-                    controls: NoVideoControls,
-                  ),
-                  if (_showVolumeOverlay)
-                    Positioned(
-                      top: 8,
-                      right: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black87,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              _volume == 0
-                                  ? Icons.volume_off
-                                  : _volume < 50
-                                  ? Icons.volume_down
-                                  : Icons.volume_up,
-                              color: Colors.white,
-                              size: 16,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              '${_volume.round()}%',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return GestureDetector(
+      onDoubleTap: () => _goFullscreen(_previewChannel!),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Video(
+            controller: playerService.videoController,
+            controls: NoVideoControls,
+            fit: BoxFit.fill,
+          ),
+          if (_showVolumeOverlay)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _volume == 0
+                          ? Icons.volume_off
+                          : _volume < 50
+                          ? Icons.volume_down
+                          : Icons.volume_up,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '${_volume.round()}%',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                  // Fullscreen button — bottom right of video
-                  Positioned(
-                    bottom: 6,
-                    right: 6,
-                    child: SizedBox(
-                      height: 28,
-                      width: 28,
-                      child: IconButton(
-                        onPressed: () => _goFullscreen(_previewChannel!),
-                        icon: const Icon(Icons.fullscreen_rounded, size: 18),
-                        padding: EdgeInsets.zero,
-                        color: Colors.white70,
-                        tooltip: 'Fullscreen',
-                      ),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
+          // Fullscreen button — bottom right of video
+          Positioned(
+            bottom: 6,
+            right: 6,
+            child: SizedBox(
+              height: 28,
+              width: 28,
+              child: IconButton(
+                onPressed: () => _goFullscreen(_previewChannel!),
+                icon: const Icon(Icons.fullscreen_rounded, size: 18),
+                padding: EdgeInsets.zero,
+                color: Colors.white70,
+                tooltip: 'Fullscreen',
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

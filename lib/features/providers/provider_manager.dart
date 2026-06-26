@@ -132,7 +132,7 @@ class ProviderManager {
 
       // Auto-add EPG source from M3U header if present
       if (result.epgUrl != null && result.epgUrl!.isNotEmpty) {
-        await _autoAddEpgSource(provider.name, result.epgUrl!);
+        await _autoAddEpgSource(provider.id, provider.name, result.epgUrl!);
       }
 
       // Debug: log per-group channel counts
@@ -168,14 +168,25 @@ class ProviderManager {
   }
 
   /// Auto-add EPG source from M3U url-tvg if not already present.
-  Future<void> _autoAddEpgSource(String providerName, String epgUrl) async {
+  Future<void> _autoAddEpgSource(
+    String providerId,
+    String providerName,
+    String epgUrl,
+  ) async {
     try {
+      // Use provider-specific ID so each M3U gets its own EPG source
+      final autoId = 'auto_$providerId';
       final existing = await _db.getAllEpgSources();
-      // Don't add if same URL already exists
-      if (existing.any((s) => s.url == epgUrl)) return;
+      // Don't re-add if same URL already stored for this provider
+      final current = existing.where((s) => s.id == autoId).toList();
+      if (current.isNotEmpty && current.first.url == epgUrl) return;
+      // Remove old auto-EPG for this provider before adding new one
+      if (current.isNotEmpty) {
+        await _db.deleteEpgSource(autoId);
+      }
       await _db.upsertEpgSource(
         db.EpgSourcesCompanion.insert(
-          id: 'auto_${epgUrl.hashCode}',
+          id: autoId,
           name: '$providerName EPG',
           url: epgUrl,
           enabled: Value(true),
@@ -187,6 +198,10 @@ class ProviderManager {
   }
 
   Future<void> deleteProvider(String id) async {
+    // Also remove the auto-EPG source for this provider
+    try {
+      await _db.deleteEpgSource('auto_$id');
+    } catch (_) {}
     await _db.deleteProvider(id);
   }
 

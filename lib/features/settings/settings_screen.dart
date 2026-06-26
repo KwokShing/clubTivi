@@ -357,9 +357,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ListTile(
                       leading: const Icon(Icons.code_rounded),
                       title: const Text('Source Code'),
-                      subtitle: const Text('github.com/clubanderson/clubTivi'),
+                      subtitle: const Text('github.com/KwokShing/clubTivi'),
                       onTap: () => launchUrl(
-                        Uri.parse('https://github.com/clubanderson/clubTivi'),
+                        Uri.parse('https://github.com/KwokShing/clubTivi'),
                       ),
                     ),
                   ],
@@ -468,12 +468,18 @@ class _EpgSourcesScreenState extends ConsumerState<_EpgSourcesScreen> {
 
   Future<void> _loadSources() async {
     try {
-      final sources = await ref.read(databaseProvider).getAllEpgSources();
+      final sources = await ref
+          .read(databaseProvider)
+          .getAllEpgSources()
+          .timeout(
+            const Duration(seconds: 5),
+            onTimeout: () => <db.EpgSource>[],
+          );
       if (!mounted) return;
       setState(() {
         _sources = sources;
         _loading = false;
-        _error = null;
+        _error = sources.isEmpty ? null : null;
       });
     } catch (e) {
       if (!mounted) return;

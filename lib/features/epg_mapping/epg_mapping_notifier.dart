@@ -102,7 +102,7 @@ class ChannelMappingEntry {
       channel.displayName.contains('24-7') ||
       (channel.groupTitle != null &&
           (channel.groupTitle!.contains('24/7') ||
-           channel.groupTitle!.contains('24-7')));
+              channel.groupTitle!.contains('24-7')));
 
   bool get isMapped =>
       mapping != null &&
@@ -115,7 +115,8 @@ class ChannelMappingEntry {
       !_is247 &&
       mapping!.confidence > 0.0 &&
       mapping!.source == MappingSource.suggested;
-  bool get isUnmapped => mapping == null || _is247 || mapping!.confidence <= 0.0;
+  bool get isUnmapped =>
+      mapping == null || _is247 || mapping!.confidence <= 0.0;
   bool get isLocked => mapping?.locked ?? false;
 }
 
@@ -129,9 +130,16 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
   EpgMappingNotifier(this._db) : super(const EpgMappingState());
 
   static String _normalizeName(String name) {
-    return name.toLowerCase()
-        .replaceAll(RegExp(r'\b(hd|fhd|shd|sd|4k|uhd)\b', caseSensitive: false), '')
-        .replaceAll(RegExp(r'(us-?[a-z]*\|?|uk-?[a-z]*\|?|ca-?[a-z]*\|?|mx-?[a-z]*\|?)'), '')
+    return name
+        .toLowerCase()
+        .replaceAll(
+          RegExp(r'\b(hd|fhd|shd|sd|4k|uhd)\b', caseSensitive: false),
+          '',
+        )
+        .replaceAll(
+          RegExp(r'(us-?[a-z]*\|?|uk-?[a-z]*\|?|ca-?[a-z]*\|?|mx-?[a-z]*\|?)'),
+          '',
+        )
         .replaceAll(RegExp(r'[\s|()[\]]+'), ' ')
         .trim();
   }
@@ -144,32 +152,25 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
     final allChannels = <Channel>[];
     for (final p in providers) {
       final dbChannels = await _db.getChannelsForProvider(p.id);
-      allChannels.addAll(dbChannels.map((c) => Channel(
-        id: c.id,
-        providerId: c.providerId,
-        name: c.name,
-        tvgId: c.tvgId,
-        tvgName: c.tvgName,
-        tvgLogo: c.tvgLogo,
-        groupTitle: c.groupTitle,
-        channelNumber: c.channelNumber,
-        streamUrl: c.streamUrl,
-      )));
+      allChannels.addAll(
+        dbChannels.map(
+          (c) => Channel(
+            id: c.id,
+            providerId: c.providerId,
+            name: c.name,
+            tvgId: c.tvgId,
+            tvgName: c.tvgName,
+            tvgLogo: c.tvgLogo,
+            groupTitle: c.groupTitle,
+            channelNumber: c.channelNumber,
+            streamUrl: c.streamUrl,
+          ),
+        ),
+      );
     }
 
-    // Scope to favorites + failover alternatives
-    final favIds = await _db.getAllFavoritedChannelIds();
-    final scopeIds = <String>{...favIds};
-    final favChannels = allChannels.where((c) => favIds.contains(c.id));
-    for (final fav in favChannels) {
-      final normName = _normalizeName(fav.name);
-      for (final c in allChannels) {
-        if (c.id != fav.id && _normalizeName(c.name) == normName) {
-          scopeIds.add(c.id);
-        }
-      }
-    }
-    final scopedChannels = allChannels.where((c) => scopeIds.contains(c.id)).toList();
+    // Show all channels for EPG mapping
+    final scopedChannels = allChannels;
 
     final mappings = await _db.getAllMappings();
     final mappingMap = <String, db.EpgMapping>{};
@@ -225,7 +226,10 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
     if (epgSources.isEmpty) {
       state = state.copyWith(isLoading: false);
       return MappingStats(
-        totalChannels: 0, mapped: 0, suggested: 0, unmapped: 0,
+        totalChannels: 0,
+        mapped: 0,
+        suggested: 0,
+        unmapped: 0,
         elapsed: Duration.zero,
       );
     }
@@ -234,18 +238,25 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
     final epgChannels = <EpgChannel>[];
     for (final src in epgSources.where((s) => s.enabled)) {
       final epgDbChannels = await _db.getEpgChannelsForSource(src.id);
-      epgChannels.addAll(epgDbChannels.map((c) => EpgChannel(
-        id: c.channelId,
-        sourceId: src.id,
-        displayNames: [c.displayName],
-        iconUrl: c.iconUrl,
-      )));
+      epgChannels.addAll(
+        epgDbChannels.map(
+          (c) => EpgChannel(
+            id: c.channelId,
+            sourceId: src.id,
+            displayNames: [c.displayName],
+            iconUrl: c.iconUrl,
+          ),
+        ),
+      );
     }
 
     if (epgChannels.isEmpty) {
       state = state.copyWith(isLoading: false);
       return MappingStats(
-        totalChannels: 0, mapped: 0, suggested: 0, unmapped: 0,
+        totalChannels: 0,
+        mapped: 0,
+        suggested: 0,
+        unmapped: 0,
         elapsed: Duration.zero,
       );
     }
@@ -279,23 +290,26 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
       if (m.epgChannelId == null || m.epgSourceId == null) continue;
       // Skip 0% confidence — not a real match
       if (m.confidence <= 0.0) continue;
-      await _db.upsertMapping(db.EpgMappingsCompanion.insert(
-        channelId: m.playlistChannelId,
-        providerId: m.providerId,
-        epgChannelId: m.epgChannelId!,
-        epgSourceId: m.epgSourceId!,
-        confidence: Value(m.confidence),
-        source: Value(m.source == MappingSource.auto ? 'auto' : 'suggested'),
-      ));
+      await _db.upsertMapping(
+        db.EpgMappingsCompanion.insert(
+          channelId: m.playlistChannelId,
+          providerId: m.providerId,
+          epgChannelId: m.epgChannelId!,
+          epgSourceId: m.epgSourceId!,
+          confidence: Value(m.confidence),
+          source: Value(m.source == MappingSource.auto ? 'auto' : 'suggested'),
+        ),
+      );
     }
 
     // Remove mappings for 24/7 channels (may exist from before the skip rule)
     for (final ch in channels) {
-      final is247 = ch.displayName.contains('24/7') ||
+      final is247 =
+          ch.displayName.contains('24/7') ||
           ch.displayName.contains('24-7') ||
           (ch.groupTitle != null &&
               (ch.groupTitle!.contains('24/7') ||
-               ch.groupTitle!.contains('24-7')));
+                  ch.groupTitle!.contains('24-7')));
       if (is247) {
         await _db.deleteMapping(ch.id, ch.providerId);
       }
@@ -313,12 +327,14 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
     required String epgChannelId,
     required String epgSourceId,
   }) async {
-    await _db.upsertMapping(db.EpgMappingsCompanion.insert(
-      channelId: channelId,
-      providerId: providerId,
-      epgChannelId: epgChannelId,
-      epgSourceId: epgSourceId,
-    ));
+    await _db.upsertMapping(
+      db.EpgMappingsCompanion.insert(
+        channelId: channelId,
+        providerId: providerId,
+        epgChannelId: epgChannelId,
+        epgSourceId: epgSourceId,
+      ),
+    );
     await load();
   }
 
@@ -334,15 +350,17 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
     required String epgChannelId,
     required String epgSourceId,
   }) async {
-    await _db.upsertMapping(db.EpgMappingsCompanion.insert(
-      channelId: channelId,
-      providerId: providerId,
-      epgChannelId: epgChannelId,
-      epgSourceId: epgSourceId,
-      confidence: const Value(1.0),
-      source: const Value('manual'),
-      locked: const Value(true),
-    ));
+    await _db.upsertMapping(
+      db.EpgMappingsCompanion.insert(
+        channelId: channelId,
+        providerId: providerId,
+        epgChannelId: epgChannelId,
+        epgSourceId: epgSourceId,
+        confidence: const Value(1.0),
+        source: const Value('manual'),
+        locked: const Value(true),
+      ),
+    );
     await load();
   }
 
@@ -380,5 +398,5 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
 /// Riverpod providers.
 final epgMappingProvider =
     StateNotifierProvider<EpgMappingNotifier, EpgMappingState>((ref) {
-  return EpgMappingNotifier(ref.watch(databaseProvider));
-});
+      return EpgMappingNotifier(ref.watch(databaseProvider));
+    });

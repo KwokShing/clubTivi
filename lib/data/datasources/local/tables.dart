@@ -13,8 +13,7 @@ class Providers extends Table {
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
   BoolColumn get enabled => boolean().withDefault(const Constant(true))();
   DateTimeColumn get lastRefresh => dateTime().nullable()();
-  DateTimeColumn get createdAt =>
-      dateTime().withDefault(currentDateAndTime)();
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -49,8 +48,7 @@ class EpgSources extends Table {
   IntColumn get refreshIntervalHours =>
       integer().withDefault(const Constant(12))();
   DateTimeColumn get lastRefresh => dateTime().nullable()();
-  DateTimeColumn get createdAt =>
-      dateTime().withDefault(currentDateAndTime)();
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 
   @override
   Set<Column> get primaryKey => {id};
@@ -92,8 +90,7 @@ class EpgMappings extends Table {
   TextColumn get source =>
       text().withDefault(const Constant('auto'))(); // auto, manual, suggested
   BoolColumn get locked => boolean().withDefault(const Constant(false))();
-  DateTimeColumn get updatedAt =>
-      dateTime().withDefault(currentDateAndTime)();
+  DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
 
   @override
   Set<Column> get primaryKey => {channelId, providerId};
@@ -174,7 +171,9 @@ class ScheduledRecordings extends Table {
   TextColumn get programmeTitle => text()();
   DateTimeColumn get programmeStart => dateTime()();
   DateTimeColumn get programmeStop => dateTime()();
-  TextColumn get status => text().withDefault(const Constant('scheduled'))(); // scheduled, recording, completed, failed
+  TextColumn get status => text().withDefault(
+    const Constant('scheduled'),
+  )(); // scheduled, recording, completed, failed
   TextColumn get outputPath => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 

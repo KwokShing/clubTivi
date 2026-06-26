@@ -57,6 +57,21 @@ class AppDatabase extends _$AppDatabase {
         await m.createTable(failoverGroupChannels);
       }
     },
+    beforeOpen: (details) async {
+      // Enable WAL mode for concurrent read/write (prevents UI blocking)
+      await customStatement('PRAGMA journal_mode=WAL');
+      await customStatement('PRAGMA synchronous=NORMAL');
+      // Add indexes for performance if they don't exist
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_channels_provider ON channels(provider_id)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_channels_group ON channels(provider_id, group_title)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_epg_programmes_channel ON epg_programmes(epg_channel_id, start, stop)',
+      );
+    },
   );
 
   // --- Provider queries ---

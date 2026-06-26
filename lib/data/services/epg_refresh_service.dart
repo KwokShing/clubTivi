@@ -36,11 +36,13 @@ class EpgRefreshService {
     debugPrint('[EPG] Refreshing source: ${source.name} (${source.url})');
 
     // Download XMLTV data
-    final dio = Dio(BaseOptions(
-      headers: {
-        'User-Agent': 'clubTivi/1.0 IPTV Player (compatible; XMLTV fetcher)',
-      },
-    ));
+    final dio = Dio(
+      BaseOptions(
+        headers: {
+          'User-Agent': 'clubTivi/1.0 IPTV Player (compatible; XMLTV fetcher)',
+        },
+      ),
+    );
     try {
       final response = await dio.get<List<int>>(
         source.url,
@@ -51,8 +53,13 @@ class EpgRefreshService {
       debugPrint('[EPG] Downloaded ${bytes.length} bytes');
 
       // Decompress + parse in background isolate to avoid ANR
-      final result = await compute(_decompressAndParse, _DecompressParseArgs(bytes, sourceId));
-      debugPrint('[EPG] Parsed ${result.channels.length} channels, ${result.programmes.length} programmes');
+      final result = await compute(
+        _decompressAndParse,
+        _DecompressParseArgs(bytes, sourceId),
+      );
+      debugPrint(
+        '[EPG] Parsed ${result.channels.length} channels, ${result.programmes.length} programmes',
+      );
 
       // Store channels
       final channelCompanions = result.channels.map((c) {
@@ -66,9 +73,24 @@ class EpgRefreshService {
       }).toList();
       await _db.upsertEpgChannels(channelCompanions);
 
-      // Delete old programmes for this source, then insert new ones in batches
+      // Only keep programmes for today and next 2 days (reduces DB writes by ~80%)
+      final now = DateTime.now();
+      final cutoffStart = now.subtract(const Duration(hours: 6));
+      final cutoffEnd = now.add(const Duration(days: 2));
+
+      final filteredProgrammes = result.programmes
+          .where(
+            (p) => p.stop.isAfter(cutoffStart) && p.start.isBefore(cutoffEnd),
+          )
+          .toList();
+
+      debugPrint(
+        '[EPG] Keeping ${filteredProgrammes.length} of ${result.programmes.length} programmes (next 2 days)',
+      );
+
+      // Delete old programmes for this source, then insert filtered ones
       await _db.deleteEpgProgrammesForSource(sourceId);
-      final programmeCompanions = result.programmes.map((p) {
+      final programmeCompanions = filteredProgrammes.map((p) {
         return db.EpgProgrammesCompanion.insert(
           epgChannelId: '${sourceId}_${p.channelId}',
           sourceId: sourceId,
@@ -82,17 +104,17 @@ class EpgRefreshService {
         );
       }).toList();
       if (programmeCompanions.isNotEmpty) {
-        // Insert in batches of 5000 to avoid blocking the main thread
-        for (var i = 0; i < programmeCompanions.length; i += 5000) {
-          final end = (i + 5000).clamp(0, programmeCompanions.length);
+        // Insert in larger batches now that dataset is smaller
+        for (var i = 0; i < programmeCompanions.length; i += 10000) {
+          final end = (i + 10000).clamp(0, programmeCompanions.length);
           await _db.insertEpgProgrammes(programmeCompanions.sublist(i, end));
-          // Yield to the event loop between batches
           await Future<void>.delayed(Duration.zero);
         }
       }
 
       // Update last refresh timestamp
       await _db.updateEpgSourceRefreshTime(sourceId);
+      debugPrint('[EPG] Refresh complete for ${source.name}');
     } finally {
       dio.close();
     }
@@ -103,9 +125,12 @@ class EpgRefreshService {
     final sources = await _db.getAllEpgSources();
     final now = DateTime.now();
     for (final source in sources.where((s) => s.enabled)) {
-      if (!force && source.lastRefresh != null &&
+      if (!force &&
+          source.lastRefresh != null &&
           now.difference(source.lastRefresh!).inHours < 4) {
-        debugPrint('[EPG] Skipping ${source.name} — refreshed ${now.difference(source.lastRefresh!).inMinutes}m ago');
+        debugPrint(
+          '[EPG] Skipping ${source.name} — refreshed ${now.difference(source.lastRefresh!).inMinutes}m ago',
+        );
         continue;
       }
       try {
@@ -141,18 +166,21 @@ class EpgRefreshService {
       ),
       (
         name: 'USA Locals (ABC, CBS, Fox, NBC)',
-        url: 'https://raw.githubusercontent.com/usa-local-epg/usa-locals/main/usalocals.xml.gz',
+        url:
+            'https://raw.githubusercontent.com/usa-local-epg/usa-locals/main/usalocals.xml.gz',
         enabled: true,
       ),
     ];
 
     for (final d in defaults) {
-      await _db.upsertEpgSource(db.EpgSourcesCompanion.insert(
-        id: _uuid.v4(),
-        name: d.name,
-        url: d.url,
-        enabled: Value(d.enabled),
-      ));
+      await _db.upsertEpgSource(
+        db.EpgSourcesCompanion.insert(
+          id: _uuid.v4(),
+          name: d.name,
+          url: d.url,
+          enabled: Value(d.enabled),
+        ),
+      );
     }
   }
 }
