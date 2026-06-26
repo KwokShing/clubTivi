@@ -1,5 +1,5 @@
-# Nightly release — runs on every push to main
-name: Nightly Release
+# Dev release — runs on every push to main
+name: Dev Release
 
 on:
   push:
@@ -10,32 +10,32 @@ permissions:
   contents: write
 
 concurrency:
-  group: nightly-release
+  group: dev-release
   cancel-in-progress: true
 
 jobs:
   build:
     uses: ./.github/workflows/build.yml
     with:
-      release_tag: nightly-${{ github.sha }}
-      release_name: "🌙 Nightly — ${{ github.sha }}"
+      release_tag: dev-${{ github.sha }}
+      release_name: "🚀 Dev — ${{ github.sha }}"
       prerelease: true
 
   cleanup:
-    name: Clean up old nightlies
+    name: Clean up old dev releases
     needs: build
     if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Delete old nightly releases (keep last 7)
+      - name: Delete old dev releases (keep last 7)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release list --limit 100 --json tagName,isPrerelease \
-            -q '[.[] | select(.isPrerelease and (.tagName | startswith("nightly-")))] | sort_by(.tagName) | reverse | .[7:][] | .tagName' \
+            -q '[.[] | select(.isPrerelease and (.tagName | startswith("dev-")))] | sort_by(.tagName) | reverse | .[7:][] | .tagName' \
           | while read -r tag; do
-              echo "Deleting old nightly: $tag"
+              echo "Deleting old dev release: $tag"
               gh release delete "$tag" --yes --cleanup-tag
             done
