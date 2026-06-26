@@ -49,6 +49,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _showOverlay = true;
   int _currentUrlIndex = 0;
   bool _showChannelList = false;
+  Offset? _lastMousePosition;
   bool _isFavorite = false;
 
   // Channel switching state
@@ -457,7 +458,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _autoHideOverlay() {
     _overlayTimer?.cancel();
-    _overlayTimer = Timer(const Duration(seconds: 4), () {
+    _overlayTimer = Timer(const Duration(seconds: 3), () {
       if (mounted) setState(() => _showOverlay = false);
     });
   }
@@ -588,7 +589,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       child: Scaffold(
         backgroundColor: Colors.black,
         body: MouseRegion(
-          onHover: (_) {
+          onHover: (event) {
+            // Only show overlay if mouse actually moved (avoid constant re-trigger on Windows)
+            if (_lastMousePosition != null &&
+                (event.position - _lastMousePosition!).distance < 2) {
+              return;
+            }
+            _lastMousePosition = event.position;
             if (!_showOverlay) setState(() => _showOverlay = true);
             _autoHideOverlay();
           },

@@ -73,9 +73,7 @@ class PlayerService {
   Player get player {
     if (_player == null) {
       _player = Player(
-        configuration: const PlayerConfiguration(
-          logLevel: MPVLogLevel.warn,
-        ),
+        configuration: const PlayerConfiguration(logLevel: MPVLogLevel.warn),
       );
       _initPlayer(_player!);
     }
@@ -101,6 +99,10 @@ class PlayerService {
         await np.setProperty('hwdec', 'mediacodec-copy');
         await np.setProperty('vo', 'gpu');
         await np.setProperty('framedrop', 'vo');
+      } else if (Platform.isIOS || Platform.isMacOS) {
+        await np.setProperty('hwdec', 'videotoolbox');
+      } else if (Platform.isWindows || Platform.isLinux) {
+        await np.setProperty('hwdec', 'auto');
       }
     }
     await p.setVolume(100);
@@ -123,7 +125,10 @@ class PlayerService {
   }
 
   /// Inject services for auto-failover (call once at startup).
-  void configureFailover(StreamAlternativesService alternatives, StreamHealthTracker health) {
+  void configureFailover(
+    StreamAlternativesService alternatives,
+    StreamHealthTracker health,
+  ) {
     _alternatives = alternatives;
     _healthTracker = health;
   }
@@ -132,7 +137,8 @@ class PlayerService {
   List<String>? _failoverGroupUrls;
 
   /// Start playing a stream URL with optional channel metadata for failover.
-  Future<void> play(String url, {
+  Future<void> play(
+    String url, {
     String? channelId,
     String? epgChannelId,
     String? tvgId,
@@ -179,22 +185,27 @@ class PlayerService {
   void _scheduleAudioCheck(String originalUrl) {
     _tracksSub?.cancel();
     // Give mpv 3 seconds to detect audio tracks before checking
-    _tracksSub = Stream<void>.fromFuture(
-      Future<void>.delayed(const Duration(seconds: 3)),
-    ).asyncMap((_) => player.state.tracks).listen((tracks) {
-      _tracksSub?.cancel();
-      if (_proxyActive || _currentUrl != originalUrl) return;
+    _tracksSub =
+        Stream<void>.fromFuture(
+          Future<void>.delayed(const Duration(seconds: 3)),
+        ).asyncMap((_) => player.state.tracks).listen((tracks) {
+          _tracksSub?.cancel();
+          if (_proxyActive || _currentUrl != originalUrl) return;
 
-      final realAudio = tracks.audio.where((a) => a.id != 'auto' && a.id != 'no').length;
-      if (realAudio > 0) {
-        debugPrint('[Player] Audio OK: $realAudio tracks detected');
-        return;
-      }
+          final realAudio = tracks.audio
+              .where((a) => a.id != 'auto' && a.id != 'no')
+              .length;
+          if (realAudio > 0) {
+            debugPrint('[Player] Audio OK: $realAudio tracks detected');
+            return;
+          }
 
-      // No real audio detected — try ffmpeg proxy
-      debugPrint('[Player] No audio tracks after 3s, trying ffmpeg proxy for $originalUrl');
-      _retryWithProxy(originalUrl);
-    });
+          // No real audio detected — try ffmpeg proxy
+          debugPrint(
+            '[Player] No audio tracks after 3s, trying ffmpeg proxy for $originalUrl',
+          );
+          _retryWithProxy(originalUrl);
+        });
   }
 
   /// Re-open the stream through the local ffmpeg proxy.
@@ -331,7 +342,9 @@ class PlayerService {
     _failoverCheckTimer?.cancel();
     _failoverCheckTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       if (_currentUrl == null) return;
-      if (_alternatives == null && (_failoverGroupUrls == null || _failoverGroupUrls!.isEmpty)) return;
+      if (_alternatives == null &&
+          (_failoverGroupUrls == null || _failoverGroupUrls!.isEmpty))
+        return;
 
       final raw = await getMpvProperty('demuxer-cache-duration');
       final cacheSecs = double.tryParse(raw ?? '');
@@ -367,9 +380,7 @@ class PlayerService {
 
     // Prefer manually-defined failover group URLs
     if (_failoverGroupUrls != null && _failoverGroupUrls!.isNotEmpty) {
-      return _failoverGroupUrls!
-          .where((u) => u != _currentUrl)
-          .toList();
+      return _failoverGroupUrls!.where((u) => u != _currentUrl).toList();
     }
 
     // Fall back to auto-detected alternatives
@@ -450,7 +461,9 @@ class PlayerService {
 
   Future<void> _autoFailover() async {
     if (_currentUrl == null) return;
-    if (_alternatives == null && (_failoverGroupUrls == null || _failoverGroupUrls!.isEmpty)) return;
+    if (_alternatives == null &&
+        (_failoverGroupUrls == null || _failoverGroupUrls!.isEmpty))
+      return;
 
     // If warm player is ready, do an instant switch
     if (_warmReady && _warmPlayer != null && _warmUrl != null) {

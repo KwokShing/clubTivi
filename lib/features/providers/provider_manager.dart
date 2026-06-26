@@ -32,12 +32,14 @@ class ProviderManager {
     required String url,
   }) async {
     await _checkProviderLimit();
-    await _db.upsertProvider(db.ProvidersCompanion.insert(
-      id: id,
-      name: name,
-      type: 'm3u',
-      url: Value(url),
-    ));
+    await _db.upsertProvider(
+      db.ProvidersCompanion.insert(
+        id: id,
+        name: name,
+        type: 'm3u',
+        url: Value(url),
+      ),
+    );
     await refreshProvider(id);
   }
 
@@ -50,14 +52,16 @@ class ProviderManager {
     required String password,
   }) async {
     await _checkProviderLimit();
-    await _db.upsertProvider(db.ProvidersCompanion.insert(
-      id: id,
-      name: name,
-      type: 'xtream',
-      url: Value(url),
-      username: Value(username),
-      password: Value(password),
-    ));
+    await _db.upsertProvider(
+      db.ProvidersCompanion.insert(
+        id: id,
+        name: name,
+        type: 'xtream',
+        url: Value(url),
+        username: Value(username),
+        password: Value(password),
+      ),
+    );
     await refreshProvider(id);
   }
 
@@ -75,22 +79,47 @@ class ProviderManager {
       return 0;
     }
 
-    // Save channels to database
-    await _db.upsertChannels(channels.map((c) => db.ChannelsCompanion.insert(
-      id: c.id,
-      providerId: c.providerId,
-      name: c.name,
-      tvgId: Value(c.tvgId),
-      tvgName: Value(c.tvgName),
-      tvgLogo: Value(c.tvgLogo),
-      groupTitle: Value(c.groupTitle),
-      channelNumber: Value(c.channelNumber),
-      streamUrl: c.streamUrl,
-      streamType: Value(c.streamType.name),
-    )).toList());
+    // Save channels to database with sort order preserved from M3U
+    await _db.upsertChannels(
+      channels.asMap().entries.map((entry) {
+        final c = entry.value;
+        final index = entry.key;
+        return db.ChannelsCompanion.insert(
+          id: c.id,
+          providerId: c.providerId,
+          name: c.name,
+          tvgId: Value(c.tvgId),
+          tvgName: Value(c.tvgName),
+          tvgLogo: Value(c.tvgLogo),
+          groupTitle: Value(c.groupTitle),
+          channelNumber: Value(c.channelNumber),
+          streamUrl: c.streamUrl,
+          streamType: Value(c.streamType.name),
+          sortOrder: Value(index),
+        );
+      }).toList(),
+    );
 
     // Resolve missing logos in background
     _resolveChannelLogos(channels).catchError((_) {});
+
+    // Debug: log parsed vs unique IDs to detect collisions
+    final uniqueIds = channels.map((c) => c.id).toSet();
+    if (uniqueIds.length != channels.length) {
+      debugPrint(
+        '[M3U] WARNING: ${channels.length} channels parsed but only ${uniqueIds.length} unique IDs — ${channels.length - uniqueIds.length} will be lost to ID collisions!',
+      );
+      // Log the colliding IDs
+      final seen = <String>{};
+      for (final c in channels) {
+        if (seen.contains(c.id)) {
+          debugPrint('[M3U] Collision: id=${c.id} name=${c.name}');
+        }
+        seen.add(c.id);
+      }
+    } else {
+      debugPrint('[M3U] Parsed ${channels.length} channels, all IDs unique.');
+    }
 
     return channels.length;
   }
@@ -100,6 +129,25 @@ class ProviderManager {
     try {
       final response = await dio.get<String>(provider.url!);
       final result = _m3uParser.parse(response.data!, providerId: provider.id);
+
+      // Auto-add EPG source from M3U header if present
+      if (result.epgUrl != null && result.epgUrl!.isNotEmpty) {
+        await _autoAddEpgSource(provider.name, result.epgUrl!);
+      }
+
+      // Debug: log per-group channel counts
+      final groupCounts = <String, int>{};
+      for (final c in result.channels) {
+        final g = c.groupTitle ?? 'Ungrouped';
+        groupCounts[g] = (groupCounts[g] ?? 0) + 1;
+      }
+      debugPrint(
+        '[M3U] ${provider.name}: ${result.channels.length} total channels, ${groupCounts.length} groups',
+      );
+      for (final entry in groupCounts.entries) {
+        debugPrint('[M3U]   ${entry.key}: ${entry.value}');
+      }
+
       return result.channels;
     } finally {
       dio.close();
@@ -116,6 +164,25 @@ class ProviderManager {
       return await client.getLiveStreams(providerId: provider.id);
     } finally {
       client.dispose();
+    }
+  }
+
+  /// Auto-add EPG source from M3U url-tvg if not already present.
+  Future<void> _autoAddEpgSource(String providerName, String epgUrl) async {
+    try {
+      final existing = await _db.getAllEpgSources();
+      // Don't add if same URL already exists
+      if (existing.any((s) => s.url == epgUrl)) return;
+      await _db.upsertEpgSource(
+        db.EpgSourcesCompanion.insert(
+          id: 'auto_${epgUrl.hashCode}',
+          name: '$providerName EPG',
+          url: epgUrl,
+          enabled: Value(true),
+        ),
+      );
+    } catch (_) {
+      // Silently ignore EPG source add failures
     }
   }
 
@@ -152,7 +219,8 @@ class ProviderManager {
         }
       }
       for (final ch in needsLogo.toList()) {
-        final stripped = ch.name.toLowerCase()
+        final stripped = ch.name
+            .toLowerCase()
             .replaceAll(RegExp(r'^[a-z]{2}[-]?[a-z]?\|\s*'), '')
             .replaceAll(RegExp(r'^[a-z]{2}:\s+'), '')
             .replaceAll(RegExp(r'^\[?[a-z]{2}\]?\s+'), '')
@@ -169,7 +237,9 @@ class ProviderManager {
     // Then resolve remaining from tv-logo/tv-logos GitHub repo
     if (needsLogo.isNotEmpty) {
       debugPrint('[Logo] Resolving ${needsLogo.length} via GitHub tv-logos...');
-      final ghResolved = await LogoResolverService.resolveLogosForChannels(needsLogo);
+      final ghResolved = await LogoResolverService.resolveLogosForChannels(
+        needsLogo,
+      );
       debugPrint('[Logo] GitHub resolved ${ghResolved.length} logos');
       resolved.addAll(ghResolved);
     }
@@ -207,7 +277,10 @@ class ProviderManager {
         .toList();
 
     if (needsLogo.isEmpty) {
-      await prefs.setInt(_logoResolvedKey, DateTime.now().millisecondsSinceEpoch);
+      await prefs.setInt(
+        _logoResolvedKey,
+        DateTime.now().millisecondsSinceEpoch,
+      );
       await prefs.setInt(_logoChannelCountKey, allChannels.length);
       return;
     }
@@ -221,7 +294,9 @@ class ProviderManager {
     final favorites = needsLogo.where((c) => favIds.contains(c.id)).toList();
     final rest = needsLogo.where((c) => !favIds.contains(c.id)).toList();
 
-    debugPrint('[Logo] ${needsLogo.length} missing (${favorites.length} favorites, ${rest.length} other)');
+    debugPrint(
+      '[Logo] ${needsLogo.length} missing (${favorites.length} favorites, ${rest.length} other)',
+    );
 
     // Resolve favorites immediately
     if (favorites.isNotEmpty) {
@@ -272,7 +347,8 @@ class ProviderManager {
     final remaining = <({String id, String name, String? tvgLogo})>[];
 
     for (final ch in channels) {
-      final stripped = ch.name.toLowerCase()
+      final stripped = ch.name
+          .toLowerCase()
           .replaceAll(RegExp(r'^[a-z]{2}[-]?[a-z]?\|\s*'), '')
           .replaceAll(RegExp(r'^[a-z]{2}:\s+'), '')
           .replaceAll(RegExp(r'^\[?[a-z]{2}\]?\s+'), '')
@@ -286,7 +362,9 @@ class ProviderManager {
     }
 
     if (remaining.isNotEmpty) {
-      final ghResolved = await LogoResolverService.resolveLogosForChannels(remaining);
+      final ghResolved = await LogoResolverService.resolveLogosForChannels(
+        remaining,
+      );
       resolved.addAll(ghResolved);
     }
 
