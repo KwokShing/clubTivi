@@ -28,6 +28,7 @@ class PlayerService {
   bool _trackingBuffering = false;
   Timer? _bufferTrackTimer;
   StreamSubscription<bool>? _bufferTrackSub;
+  StreamSubscription<bool>? _completedSub; // auto-resume on segment end
 
   /// Buffer stall threshold before triggering failover.
   static const bufferStallThreshold = Duration(seconds: 3);
@@ -94,6 +95,12 @@ class PlayerService {
       // Volume
       await np.setProperty('volume', '100');
       await np.setProperty('mute', 'no');
+      // Auto-reconnect at EOF for segmented/intermittent streams (ffmpeg level).
+      // This keeps the same demuxer alive so there's no black flash on reconnect.
+      await np.setProperty(
+        'stream-lavf-o',
+        'reconnect=1,reconnect_at_eof=1,reconnect_streamed=1,reconnect_delay_max=2',
+      );
       // Android TV: enable hardware decoding and optimize buffering
       if (Platform.isAndroid) {
         await np.setProperty('hwdec', 'mediacodec-copy');
@@ -176,6 +183,28 @@ class PlayerService {
     // Check for missing audio after a brief delay and retry through
     // ffmpeg proxy if needed (fixes EAC-3 with non-standard codec tags)
     _scheduleAudioCheck(url);
+
+    // ffmpeg reconnect handles most streams. For streams that truly hit EOF
+    // (server closes connection), reload via loadfile to keep the last frame
+    // visible (no black flash) then resume playback.
+    _completedSub?.cancel();
+    _completedSub = player.stream.completed.listen((completed) async {
+      if (!completed || _currentUrl == null) return;
+      debugPrint('[Player] EOF reached, reloading: $_currentUrl');
+      final platform = player.platform;
+      if (platform is native_player.NativePlayer) {
+        try {
+          // loadfile replace keeps the video output texture (no black flash)
+          await platform.command(['loadfile', _currentUrl!, 'replace']);
+          // Ensure playback resumes (keep-open may have paused it)
+          await player.play();
+        } catch (_) {
+          await player.open(Media(_currentUrl!));
+        }
+      } else {
+        await player.open(Media(_currentUrl!));
+      }
+    });
 
     // Reset and start buffer tracking for the new stream
     bufferHistory.fillRange(0, 60, false);
@@ -368,6 +397,14 @@ class PlayerService {
       final cacheSecs = double.tryParse(raw ?? '');
       if (cacheSecs == null) return;
 
+      // If the stream is reconnecting at EOF (segmented stream boundary),
+      // don't treat the brief cache drop as a stall → avoid false failover.
+      final eofReached = await getMpvProperty('eof-reached');
+      if (eofReached == 'yes') {
+        _consecutiveLowBuffer = 0;
+        return;
+      }
+
       // Record health sample
       _healthTracker?.recordBufferSample(_currentUrl!, cacheSecs);
 
@@ -535,6 +572,7 @@ class PlayerService {
       _bufferManager.stop();
       _tracksSub?.cancel();
       _bufferTrackSub?.cancel();
+      _completedSub?.cancel();
       _bufferTrackTimer?.cancel();
       _failoverCheckTimer?.cancel();
       _disposeWarmPlayer();

@@ -2382,20 +2382,40 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                 ),
               ),
             ),
-          // Fullscreen button — bottom right of video
+          // Fullscreen & stop buttons — bottom right of video
           Positioned(
             bottom: 6,
             right: 6,
-            child: SizedBox(
-              height: 28,
-              width: 28,
-              child: IconButton(
-                onPressed: () => _goFullscreen(_previewChannel!),
-                icon: const Icon(Icons.fullscreen_rounded, size: 18),
-                padding: EdgeInsets.zero,
-                color: Colors.white70,
-                tooltip: 'Fullscreen',
-              ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  height: 28,
+                  width: 28,
+                  child: IconButton(
+                    onPressed: () {
+                      ref.read(playerServiceProvider).stop();
+                      setState(() => _previewChannel = null);
+                    },
+                    icon: const Icon(Icons.stop_rounded, size: 18),
+                    padding: EdgeInsets.zero,
+                    color: Colors.white70,
+                    tooltip: 'Stop',
+                  ),
+                ),
+                const SizedBox(width: 4),
+                SizedBox(
+                  height: 28,
+                  width: 28,
+                  child: IconButton(
+                    onPressed: () => _goFullscreen(_previewChannel!),
+                    icon: const Icon(Icons.fullscreen_rounded, size: 18),
+                    padding: EdgeInsets.zero,
+                    color: Colors.white70,
+                    tooltip: 'Fullscreen',
+                  ),
+                ),
+              ],
             ),
           ),
         ],

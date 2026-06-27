@@ -46,7 +46,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
 }
 
 class _PlayerScreenState extends ConsumerState<PlayerScreen> {
-  bool _showOverlay = true;
+  bool _showOverlay = false;
   int _currentUrlIndex = 0;
   bool _showChannelList = false;
   Offset? _lastMousePosition;
@@ -98,7 +98,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     FullscreenHelper.enterFullscreen();
     _startPlayback();
-    _autoHideOverlay();
     _loadEpgInfo();
     _loadFavoriteState();
   }
@@ -596,8 +595,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               return;
             }
             _lastMousePosition = event.position;
-            if (!_showOverlay) setState(() => _showOverlay = true);
-            _autoHideOverlay();
+            if (!_showOverlay) {
+              setState(() => _showOverlay = true);
+              _autoHideOverlay();
+            }
           },
           child: GestureDetector(
             onTap: _toggleOverlay,
