@@ -10,7 +10,6 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'adaptive_buffer.dart';
-import 'stream_proxy.dart';
 import '../../data/services/stream_alternatives_service.dart';
 import '../../data/services/stream_health_tracker.dart';
 
@@ -59,9 +58,6 @@ class PlayerService {
   /// so heavy streams (4K60) that take several seconds to prime aren't treated
   /// as stalled and prematurely warm-preloaded / failed over.
   DateTime? _playbackStartedAt;
-  Timer? _audioCheckTimer;
-  final StreamProxy _streamProxy = StreamProxy();
-  bool _proxyActive = false;
 
   // ── Warm failover: background pre-buffer player ──
   Player? _warmPlayer;
@@ -89,47 +85,57 @@ class PlayerService {
   Player get player {
     if (_player == null) {
       _player = Player(
-        configuration: const PlayerConfiguration(logLevel: MPVLogLevel.warn),
+        configuration: const PlayerConfiguration(
+          logLevel: MPVLogLevel.warn,
+          // Match the known-good lightweight reference: a healthy demuxer
+          // buffer so heavy 4K HEVC streams have room to prime.
+          bufferSize: 64 * 1024 * 1024,
+        ),
       );
       _initPlayer(_player!);
     }
     return _player!;
   }
 
+  /// Best-effort mpv property set — never throws, so a single unsupported
+  /// property can't abort player initialization (which would leave
+  /// `_ensureReady` hanging and playback never starting).
+  Future<void> _set(
+    native_player.NativePlayer np,
+    String key,
+    String value,
+  ) async {
+    try {
+      await np.setProperty(key, value);
+    } catch (e) {
+      debugPrint('[Player] setProperty $key failed: $e');
+    }
+  }
+
   Future<void> _initPlayer(Player p) async {
     final np = p.platform;
     if (np is native_player.NativePlayer) {
-      // Downmix surround to stereo for output compatibility
-      await np.setProperty('audio-channels', 'stereo');
-      // Normalize volume when downmixing surround to stereo
-      await np.setProperty('audio-normalize-downmix', 'yes');
-      // EBU R128 loudness normalization — keeps volume consistent across streams
-      await np.setProperty('af', 'loudnorm=I=-14:TP=-1:LRA=13');
-      // Disable SPDIF passthrough which can cause silent output
-      await np.setProperty('audio-spdif', '');
-      // Volume
-      await np.setProperty('volume', '100');
-      await np.setProperty('mute', 'no');
-      // Auto-reconnect at EOF for segmented/intermittent streams (ffmpeg level).
-      // This keeps the same demuxer alive so there's no black flash on reconnect.
-      await np.setProperty(
-        'stream-lavf-o',
-        'reconnect=1,reconnect_at_eof=1,reconnect_streamed=1,reconnect_delay_max=2',
-      );
-      // Android TV: enable hardware decoding and optimize buffering
-      if (Platform.isAndroid) {
-        await np.setProperty('hwdec', 'mediacodec-copy');
-        await np.setProperty('vo', 'gpu');
-        await np.setProperty('framedrop', 'vo');
-      } else if (Platform.isIOS || Platform.isMacOS) {
-        await np.setProperty('hwdec', 'videotoolbox');
-      } else if (Platform.isWindows || Platform.isLinux) {
-        await np.setProperty('hwdec', 'auto');
-      }
+      // ── Core decode path ──────────────────────────────────────────────
+      // Mirror the minimal, proven-working reference config. hwdec=auto lets
+      // mpv pick the platform HW decoder (d3d11va / videotoolbox / mediacodec)
+      // for 4K HEVC; interpolation off + audio video-sync keep first-frame
+      // latency low and avoid heavy GPU work that stalls 4K startup.
+      final hwdec = Platform.isAndroid ? 'mediacodec-copy' : 'auto';
+      await _set(np, 'hwdec', hwdec);
+      await _set(np, 'interpolation', 'no');
+      await _set(np, 'video-sync', 'audio');
+
+      // ── Audio normalization (app feature, audio-only) ─────────────────
+      // Best-effort: these shape audio output only and never block video.
+      await _set(np, 'audio-channels', 'stereo');
+      await _set(np, 'audio-normalize-downmix', 'yes');
+      await _set(np, 'af', 'loudnorm=I=-14:TP=-1:LRA=13');
+      await _set(np, 'volume', '100');
+      await _set(np, 'mute', 'no');
     }
     await p.setVolume(100);
     _playerReady = true;
-    _playerReadyCompleter.complete();
+    if (!_playerReadyCompleter.isCompleted) _playerReadyCompleter.complete();
   }
 
   /// Wait for player properties to be applied before playback.
@@ -142,14 +148,15 @@ class PlayerService {
   }
 
   VideoController get videoController {
-    // Explicitly enable hardware-accelerated video output (HEVC Main10 / 4K60
-    // decode on the GPU). This is media_kit's default, but stating it here
-    // documents intent and keeps it from being silently changed. hwdec itself
-    // is left at the platform default and further tuned via mpv properties in
-    // _initPlayer.
+    // Configure the video output exactly like the proven-working reference:
+    // hwdec=auto here wires media_kit's hardware video pipeline (ANGLE/D3D11
+    // on Windows, VideoToolbox on Apple) to the GPU HEVC decoder. Setting it
+    // on the controller — not just as a bare mpv property — is what makes 4K
+    // HEVC frames actually reach the texture.
     _videoController ??= VideoController(
       player,
       configuration: const VideoControllerConfiguration(
+        hwdec: 'auto',
         enableHardwareAcceleration: true,
       ),
     );
@@ -183,7 +190,6 @@ class PlayerService {
     _bufferStartTime = null;
     _consecutiveLowBuffer = 0;
     _playbackStartedAt = DateTime.now();
-    _audioCheckTimer?.cancel();
     _currentUrl = url;
     _currentChannelId = channelId;
     _currentEpgChannelId = epgChannelId;
@@ -195,9 +201,7 @@ class PlayerService {
     _tracksSub?.cancel();
     _failoverCheckTimer?.cancel();
     _disposeWarmPlayer();
-    _proxyActive = false;
     try {
-      await _streamProxy.stop();
       await _ensureReady();
       // Open immediately with the live-tuned buffer tier (primes a small
       // initial buffer; also the right profile for heavy streams). We do NOT
@@ -215,10 +219,6 @@ class PlayerService {
 
     // Refine live vs VOD off the critical path.
     _refineStreamProfile(url);
-
-    // Check for missing audio after a brief delay and retry through
-    // ffmpeg proxy if needed (fixes EAC-3 with non-standard codec tags)
-    _scheduleAudioCheck(url);
 
     // ffmpeg reconnect handles most streams. For streams that truly hit EOF
     // (server closes connection), reload via loadfile to keep the last frame
@@ -261,73 +261,6 @@ class PlayerService {
     _startFailoverMonitor();
   }
 
-  /// Check audio tracks after playback starts; retry through ffmpeg proxy
-  /// if no real audio tracks are detected.
-  ///
-  /// Heavy streams (4K60) can take several seconds before mpv reports audio
-  /// tracks, so poll a few times over ~12s before concluding there is no
-  /// audio — a single early check produced false negatives that needlessly
-  /// routed working streams through the proxy.
-  void _scheduleAudioCheck(String originalUrl) {
-    _audioCheckTimer?.cancel();
-    var attempts = 0;
-    _audioCheckTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      attempts++;
-      if (_proxyActive || _currentUrl != originalUrl) {
-        timer.cancel();
-        return;
-      }
-
-      final tracks = player.state.tracks;
-      final realAudio = tracks.audio
-          .where((a) => a.id != 'auto' && a.id != 'no')
-          .length;
-      if (realAudio > 0) {
-        debugPrint('[Player] Audio OK: $realAudio tracks detected');
-        timer.cancel();
-        return;
-      }
-
-      // Still no audio — keep waiting up to ~12s before giving up, since
-      // heavy streams report tracks late.
-      if (attempts >= 4) {
-        timer.cancel();
-        debugPrint(
-          '[Player] No audio tracks after ${attempts * 3}s, '
-          'trying ffmpeg proxy for $originalUrl',
-        );
-        _retryWithProxy(originalUrl);
-      }
-    });
-  }
-
-  /// Re-open the stream through the local ffmpeg proxy.
-  Future<void> _retryWithProxy(String originalUrl) async {
-    if (_proxyActive) return; // Avoid recursive retry
-    try {
-      final proxyUrl = await _streamProxy.start(originalUrl);
-      if (proxyUrl == null) {
-        debugPrint(
-          '[Player] ffmpeg proxy unavailable, keeping direct playback',
-        );
-        return;
-      }
-      // Verify the stream URL hasn't changed while we were starting the proxy
-      if (_currentUrl != originalUrl) {
-        await _streamProxy.stop();
-        return;
-      }
-      _proxyActive = true;
-      debugPrint('[Player] Switching to proxied stream: $proxyUrl');
-      await player.open(Media(proxyUrl));
-      await _bufferManager.applyForStream(originalUrl, this,
-          isLive: _isLiveStream);
-      await player.setVolume(100.0);
-    } catch (e) {
-      debugPrint('[Player] Proxy retry failed: $e');
-    }
-  }
-
   /// Whether audio tracks are available on the current stream.
   Stream<bool> get hasAudioStream =>
       player.stream.tracks.map((t) => t.audio.length > 1);
@@ -339,7 +272,6 @@ class PlayerService {
   /// Stop playback.
   Future<void> stop() async {
     _bufferManager.stop();
-    _audioCheckTimer?.cancel();
     _failoverCheckTimer?.cancel();
     await player.stop();
   }
@@ -682,8 +614,6 @@ class PlayerService {
 
       // Switch main player to the pre-buffered URL
       _currentUrl = newUrl;
-      _proxyActive = false;
-      await _streamProxy.stop();
       await player.open(Media(newUrl));
       await _bufferManager.applyForStream(newUrl, this, isLive: _isLiveStream);
       _startFailoverMonitor();
@@ -706,8 +636,6 @@ class PlayerService {
     _failoverCheckTimer?.cancel();
     _disposeWarmPlayer();
     _currentUrl = newUrl;
-    _proxyActive = false;
-    await _streamProxy.stop();
     await player.open(Media(newUrl));
     await _bufferManager.applyForStream(newUrl, this, isLive: _isLiveStream);
     _startFailoverMonitor();
@@ -721,14 +649,12 @@ class PlayerService {
     try {
       _bufferManager.stop();
       _tracksSub?.cancel();
-      _audioCheckTimer?.cancel();
       _bufferTrackSub?.cancel();
       _completedSub?.cancel();
       _bufferTrackTimer?.cancel();
       _failoverCheckTimer?.cancel();
       _disposeWarmPlayer();
       _healthTracker?.save();
-      _streamProxy.stop();
       _player?.dispose();
     } catch (e) {
       debugPrint('[Player] Error during dispose: $e');
