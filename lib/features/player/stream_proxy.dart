@@ -169,11 +169,34 @@ class StreamProxy {
 
   /// Find ffmpeg binary on the system.
   static Future<String?> _findFfmpeg() async {
-    // Check common locations
+    if (Platform.isWindows) {
+      // PATH lookup via `where` (Windows has no `which`).
+      try {
+        final result = await Process.run('where', ['ffmpeg']);
+        if (result.exitCode == 0) {
+          final first = (result.stdout as String)
+              .split(RegExp(r'\r?\n'))
+              .map((l) => l.trim())
+              .firstWhere((l) => l.isNotEmpty, orElse: () => '');
+          if (first.isNotEmpty) return first;
+        }
+      } catch (_) {}
+      // Common manual install locations.
+      const winPaths = [
+        r'C:\ffmpeg\bin\ffmpeg.exe',
+        r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+      ];
+      for (final path in winPaths) {
+        if (await File(path).exists()) return path;
+      }
+      return null;
+    }
+
+    // macOS / Linux: check common locations first.
     const paths = [
-      '/opt/homebrew/bin/ffmpeg',  // macOS Apple Silicon
-      '/usr/local/bin/ffmpeg',      // macOS Intel / Linux
-      '/usr/bin/ffmpeg',            // Linux system
+      '/opt/homebrew/bin/ffmpeg', // macOS Apple Silicon
+      '/usr/local/bin/ffmpeg', // macOS Intel / Linux
+      '/usr/bin/ffmpeg', // Linux system
     ];
 
     for (final path in paths) {

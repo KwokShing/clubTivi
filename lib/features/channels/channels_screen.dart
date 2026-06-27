@@ -156,6 +156,16 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   // IMDB ID cache: show title → IMDB ID (null = lookup in progress/failed)
   final Map<String, String?> _imdbIdCache = {};
 
+  // EPG programme futures cache — stabilizes the guide's FutureBuilder subtree.
+  // Without it, `future:` was rebuilt every frame, thrashing the Stack/Positioned
+  // programme blocks and flooding the accessibility bridge (AXTree churn) /
+  // previously crashing layout. ONLY successful, non-empty results are pinned;
+  // empty/loading/error results are dropped so the guide self-heals once EPG
+  // data arrives (avoids the earlier "EPG never loads" regression).
+  // Keyed by epgId|shift|hourlyBucket; cleared on bucket rollover and EPG reload.
+  final Map<String, Future<List<db.EpgProgramme>>> _programmeFutureCache = {};
+  int? _programmeCacheBucket;
+
   // Persistence keys
   static const _kLastChannelId = 'last_channel_id';
   static const _kLastGroup = 'last_group';
@@ -711,6 +721,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     List<db.Channel> allChannels,
     Set<String> favChannelIds,
   ) async {
+    // EPG is being (re)loaded — drop cached programme futures so the guide
+    // re-fetches fresh data after an import/refresh.
+    _programmeFutureCache.clear();
     final epgSources = await database.getAllEpgSources();
     final currentSourceIds = epgSources.map((s) => s.id).toSet();
     final validIds = <String>{};
@@ -4012,20 +4025,24 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                               );
                             }
                             return ClipRect(
-                              child: OverflowBox(
-                                alignment: Alignment.centerLeft,
-                                maxWidth: totalWidth,
-                                child: Transform.translate(
-                                  offset: Offset(-hOffset, 0),
-                                  child: _buildGuideRowProgrammes(
-                                    epgMember!,
-                                    database,
-                                    dayStart,
-                                    dayEnd,
-                                    totalMinutes: totalMinutes,
-                                    totalWidth: totalWidth,
+                              child: Stack(
+                                clipBehavior: Clip.hardEdge,
+                                children: [
+                                  Positioned(
+                                    left: -hOffset,
+                                    top: 0,
+                                    bottom: 0,
+                                    width: totalWidth,
+                                    child: _buildGuideRowProgrammes(
+                                      epgMember!,
+                                      database,
+                                      dayStart,
+                                      dayEnd,
+                                      totalMinutes: totalMinutes,
+                                      totalWidth: totalWidth,
+                                    ),
                                   ),
-                                ),
+                                ],
                               ),
                             );
                           },
@@ -6285,22 +6302,27 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                         child: LayoutBuilder(
                                           builder: (context, constraints) {
                                             return ClipRect(
-                                              child: OverflowBox(
-                                                alignment: Alignment.centerLeft,
-                                                maxWidth: totalWidth,
-                                                child: Transform.translate(
-                                                  offset: Offset(-hOffset, 0),
-                                                  child:
-                                                      _buildGuideRowProgrammes(
-                                                        channel,
-                                                        database,
-                                                        dayStart,
-                                                        dayEnd,
-                                                        totalMinutes:
-                                                            totalMinutes,
-                                                        totalWidth: totalWidth,
-                                                      ),
-                                                ),
+                                              child: Stack(
+                                                clipBehavior: Clip.hardEdge,
+                                                children: [
+                                                  Positioned(
+                                                    left: -hOffset,
+                                                    top: 0,
+                                                    bottom: 0,
+                                                    width: totalWidth,
+                                                    child:
+                                                        _buildGuideRowProgrammes(
+                                                          channel,
+                                                          database,
+                                                          dayStart,
+                                                          dayEnd,
+                                                          totalMinutes:
+                                                              totalMinutes,
+                                                          totalWidth:
+                                                              totalWidth,
+                                                        ),
+                                                  ),
+                                                ],
                                               ),
                                             );
                                           },
@@ -6519,12 +6541,48 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     final shiftHours = _epgTimeshifts[channel.id] ?? 0;
     final fetchShift = Duration(hours: shiftHours);
 
-    return FutureBuilder<List<db.EpgProgramme>>(
-      future: database.getProgrammes(
+    // Reuse the same future across rebuilds. `dayStart` moves every build
+    // (DateTime.now()), so bucket the key to the hour. Roll over hourly /
+    // across days; clearing on rollover bounds cache growth.
+    final bucket = DateTime(
+      dayStart.year,
+      dayStart.month,
+      dayStart.day,
+      dayStart.hour,
+    ).millisecondsSinceEpoch;
+    if (_programmeCacheBucket != bucket) {
+      _programmeCacheBucket = bucket;
+      _programmeFutureCache.clear();
+    }
+    final cacheKey = '$epgId|$shiftHours|$bucket';
+
+    var programmesFuture = _programmeFutureCache[cacheKey];
+    if (programmesFuture == null) {
+      final created = database.getProgrammes(
         epgChannelId: epgId,
         start: dayStart.subtract(fetchShift),
         end: dayEnd.subtract(fetchShift),
-      ),
+      );
+      _programmeFutureCache[cacheKey] = created;
+      // Pin only successful, non-empty results. Drop empty/error so the next
+      // build retries once EPG data lands (prevents pinning a premature empty).
+      created
+          .then((list) {
+            if (list.isEmpty &&
+                identical(_programmeFutureCache[cacheKey], created)) {
+              _programmeFutureCache.remove(cacheKey);
+            }
+          })
+          .catchError((Object _) {
+            if (identical(_programmeFutureCache[cacheKey], created)) {
+              _programmeFutureCache.remove(cacheKey);
+            }
+          });
+      programmesFuture = created;
+    }
+
+    return FutureBuilder<List<db.EpgProgramme>>(
+      future: programmesFuture,
       builder: (context, snapshot) {
         if (!snapshot.hasData || snapshot.data!.isEmpty) {
           return const Center(

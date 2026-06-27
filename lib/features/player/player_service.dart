@@ -3,9 +3,11 @@ import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit/src/player/native/player/real.dart' as native_player;
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'adaptive_buffer.dart';
 import 'stream_proxy.dart';
@@ -30,6 +32,14 @@ class PlayerService {
   StreamSubscription<bool>? _bufferTrackSub;
   StreamSubscription<bool>? _completedSub; // auto-resume on segment end
 
+  /// Whether the current stream is live (HLS without ENDLIST / short window).
+  /// Drives live-tuned buffering and throttled EOF handling.
+  bool _isLiveStream = false;
+  bool get isLiveStream => _isLiveStream;
+
+  /// Timestamp of the last EOF-triggered reload (used to throttle live reloads).
+  DateTime? _lastEofReload;
+
   /// Buffer stall threshold before triggering failover.
   static const bufferStallThreshold = Duration(seconds: 3);
 
@@ -45,6 +55,11 @@ class PlayerService {
   StreamHealthTracker? _healthTracker;
   Timer? _failoverCheckTimer;
   int _consecutiveLowBuffer = 0;
+  /// When the current stream started opening — used for a startup grace period
+  /// so heavy streams (4K60) that take several seconds to prime aren't treated
+  /// as stalled and prematurely warm-preloaded / failed over.
+  DateTime? _playbackStartedAt;
+  Timer? _audioCheckTimer;
   final StreamProxy _streamProxy = StreamProxy();
   bool _proxyActive = false;
 
@@ -127,7 +142,17 @@ class PlayerService {
   }
 
   VideoController get videoController {
-    _videoController ??= VideoController(player);
+    // Explicitly enable hardware-accelerated video output (HEVC Main10 / 4K60
+    // decode on the GPU). This is media_kit's default, but stating it here
+    // documents intent and keeps it from being silently changed. hwdec itself
+    // is left at the platform default and further tuned via mpv properties in
+    // _initPlayer.
+    _videoController ??= VideoController(
+      player,
+      configuration: const VideoControllerConfiguration(
+        enableHardwareAcceleration: true,
+      ),
+    );
     return _videoController!;
   }
 
@@ -157,6 +182,8 @@ class PlayerService {
     _isBuffering = false;
     _bufferStartTime = null;
     _consecutiveLowBuffer = 0;
+    _playbackStartedAt = DateTime.now();
+    _audioCheckTimer?.cancel();
     _currentUrl = url;
     _currentChannelId = channelId;
     _currentEpgChannelId = epgChannelId;
@@ -172,13 +199,22 @@ class PlayerService {
     try {
       await _streamProxy.stop();
       await _ensureReady();
+      // Open immediately with the live-tuned buffer tier (primes a small
+      // initial buffer; also the right profile for heavy streams). We do NOT
+      // block playback on the live-detection HTTP probe — that added several
+      // seconds of startup latency. Detection runs in the background below and
+      // downgrades to the VOD (large-readahead) tier only if it's actually VOD.
+      _isLiveStream = true;
+      await _bufferManager.applyForStream(url, this, isLive: true);
       await player.open(Media(url));
-      await _bufferManager.applyForStream(url, this);
       await player.setVolume(100.0);
     } catch (e) {
       debugPrint('[Player] Error starting playback: $e');
       return;
     }
+
+    // Refine live vs VOD off the critical path.
+    _refineStreamProfile(url);
 
     // Check for missing audio after a brief delay and retry through
     // ffmpeg proxy if needed (fixes EAC-3 with non-standard codec tags)
@@ -190,6 +226,17 @@ class PlayerService {
     _completedSub?.cancel();
     _completedSub = player.stream.completed.listen((completed) async {
       if (!completed || _currentUrl == null) return;
+      // For live streams the edge can briefly report completed while the
+      // playlist refreshes. ffmpeg reconnect + auto-failover handle real
+      // outages, so throttle reloads to avoid a tight reload loop.
+      if (_isLiveStream) {
+        final now = DateTime.now();
+        if (_lastEofReload != null &&
+            now.difference(_lastEofReload!) < const Duration(seconds: 5)) {
+          return;
+        }
+        _lastEofReload = now;
+      }
       debugPrint('[Player] EOF reached, reloading: $_currentUrl');
       final platform = player.platform;
       if (platform is native_player.NativePlayer) {
@@ -216,37 +263,42 @@ class PlayerService {
 
   /// Check audio tracks after playback starts; retry through ffmpeg proxy
   /// if no real audio tracks are detected.
+  ///
+  /// Heavy streams (4K60) can take several seconds before mpv reports audio
+  /// tracks, so poll a few times over ~12s before concluding there is no
+  /// audio — a single early check produced false negatives that needlessly
+  /// routed working streams through the proxy.
   void _scheduleAudioCheck(String originalUrl) {
-    _tracksSub?.cancel();
-    // Give mpv 3 seconds to detect audio tracks before checking
-    _tracksSub =
-        Stream<void>.fromFuture(
-              Future<void>.delayed(const Duration(seconds: 3)),
-            )
-            .asyncMap((_) => player.state.tracks)
-            .listen(
-              (tracks) {
-                _tracksSub?.cancel();
-                if (_proxyActive || _currentUrl != originalUrl) return;
+    _audioCheckTimer?.cancel();
+    var attempts = 0;
+    _audioCheckTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      attempts++;
+      if (_proxyActive || _currentUrl != originalUrl) {
+        timer.cancel();
+        return;
+      }
 
-                final realAudio = tracks.audio
-                    .where((a) => a.id != 'auto' && a.id != 'no')
-                    .length;
-                if (realAudio > 0) {
-                  debugPrint('[Player] Audio OK: $realAudio tracks detected');
-                  return;
-                }
+      final tracks = player.state.tracks;
+      final realAudio = tracks.audio
+          .where((a) => a.id != 'auto' && a.id != 'no')
+          .length;
+      if (realAudio > 0) {
+        debugPrint('[Player] Audio OK: $realAudio tracks detected');
+        timer.cancel();
+        return;
+      }
 
-                // No real audio detected — try ffmpeg proxy
-                debugPrint(
-                  '[Player] No audio tracks after 3s, trying ffmpeg proxy for $originalUrl',
-                );
-                _retryWithProxy(originalUrl);
-              },
-              onError: (e) {
-                debugPrint('[Player] Audio check error: $e');
-              },
-            );
+      // Still no audio — keep waiting up to ~12s before giving up, since
+      // heavy streams report tracks late.
+      if (attempts >= 4) {
+        timer.cancel();
+        debugPrint(
+          '[Player] No audio tracks after ${attempts * 3}s, '
+          'trying ffmpeg proxy for $originalUrl',
+        );
+        _retryWithProxy(originalUrl);
+      }
+    });
   }
 
   /// Re-open the stream through the local ffmpeg proxy.
@@ -268,7 +320,8 @@ class PlayerService {
       _proxyActive = true;
       debugPrint('[Player] Switching to proxied stream: $proxyUrl');
       await player.open(Media(proxyUrl));
-      await _bufferManager.applyForStream(originalUrl, this);
+      await _bufferManager.applyForStream(originalUrl, this,
+          isLive: _isLiveStream);
       await player.setVolume(100.0);
     } catch (e) {
       debugPrint('[Player] Proxy retry failed: $e');
@@ -286,6 +339,8 @@ class PlayerService {
   /// Stop playback.
   Future<void> stop() async {
     _bufferManager.stop();
+    _audioCheckTimer?.cancel();
+    _failoverCheckTimer?.cancel();
     await player.stop();
   }
 
@@ -331,6 +386,91 @@ class PlayerService {
       _isBuffering = false;
       _bufferStartTime = null;
     }
+  }
+
+  /// Refine the live/VOD profile in the background after playback has started,
+  /// without blocking initial open. If the stream turns out to be VOD, switch
+  /// from the optimistic live tier to the large-readahead VOD tier.
+  void _refineStreamProfile(String url) {
+    _detectLive(url).then((live) {
+      if (_currentUrl != url) return; // stream changed meanwhile
+      if (_isLiveStream == live) return; // already correct (live assumed)
+      _isLiveStream = live;
+      if (!live) {
+        _bufferManager.applyForStream(url, this, isLive: false);
+      }
+    });
+  }
+
+  /// Detect whether [url] is a live stream (HLS playlist without
+  /// `#EXT-X-ENDLIST`). Only HLS (`.m3u8`) URLs are probed; anything else is
+  /// treated as VOD. Network/parse failures fall back to VOD so a slow probe
+  /// never blocks playback. Bounded by a short timeout.
+  Future<bool> _detectLive(String url) async {
+    if (!url.toLowerCase().contains('.m3u8')) return false;
+    try {
+      final headers = await _probeHeaders();
+      final uri = Uri.parse(url);
+      var body = await _fetchPlaylist(uri, headers);
+      if (body == null) return false;
+
+      // Master playlist → resolve and probe the first variant.
+      if (body.contains('#EXT-X-STREAM-INF')) {
+        final variant = _firstVariantUri(uri, body);
+        if (variant != null) {
+          final variantBody = await _fetchPlaylist(variant, headers);
+          if (variantBody != null) body = variantBody;
+        }
+      }
+
+      final isMediaPlaylist = body.contains('#EXTINF');
+      final hasEndList = body.contains('#EXT-X-ENDLIST');
+      final live = isMediaPlaylist && !hasEndList;
+      debugPrint('[Player] Live detection: $live for $url');
+      return live;
+    } catch (e) {
+      debugPrint('[Player] Live detection failed (assuming VOD): $e');
+      return false;
+    }
+  }
+
+  /// Fetch a playlist body with a short timeout. Returns null on failure.
+  Future<String?> _fetchPlaylist(Uri uri, Map<String, String> headers) async {
+    try {
+      final resp = await http
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 3));
+      if (resp.statusCode == 200) return resp.body;
+    } catch (_) {}
+    return null;
+  }
+
+  /// Resolve the first variant URI from a master playlist.
+  Uri? _firstVariantUri(Uri base, String master) {
+    final lines = master.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+        for (var j = i + 1; j < lines.length; j++) {
+          final line = lines[j].trim();
+          if (line.isEmpty || line.startsWith('#')) continue;
+          return base.resolve(line);
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Build request headers for playlist probing, honoring the user's
+  /// configured playback User-Agent when one is set.
+  Future<Map<String, String>> _probeHeaders() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final ua = prefs.getString('playback_user_agent');
+      if (ua != null && ua.isNotEmpty && ua != 'Default') {
+        return {'User-Agent': ua};
+      }
+    } catch (_) {}
+    return const {};
   }
 
   /// Read an mpv property from the underlying native player.
@@ -407,6 +547,16 @@ class PlayerService {
 
       // Record health sample
       _healthTracker?.recordBufferSample(_currentUrl!, cacheSecs);
+
+      // Startup grace: heavy streams (4K60 10-bit HEVC ~20Mbps) legitimately
+      // take several seconds to prime their initial buffer. Don't treat low
+      // buffer as a stall during this window, or we warm-preload a second
+      // decode / fail over before the stream ever gets a chance to start.
+      if (_playbackStartedAt != null &&
+          DateTime.now().difference(_playbackStartedAt!) <
+              const Duration(seconds: 15)) {
+        return;
+      }
 
       if (cacheSecs < 1.0) {
         _consecutiveLowBuffer++;
@@ -535,7 +685,7 @@ class PlayerService {
       _proxyActive = false;
       await _streamProxy.stop();
       await player.open(Media(newUrl));
-      await _bufferManager.applyForStream(newUrl, this);
+      await _bufferManager.applyForStream(newUrl, this, isLive: _isLiveStream);
       _startFailoverMonitor();
 
       _currentUrlController.add(newUrl);
@@ -559,7 +709,7 @@ class PlayerService {
     _proxyActive = false;
     await _streamProxy.stop();
     await player.open(Media(newUrl));
-    await _bufferManager.applyForStream(newUrl, this);
+    await _bufferManager.applyForStream(newUrl, this, isLive: _isLiveStream);
     _startFailoverMonitor();
 
     _currentUrlController.add(newUrl);
@@ -571,6 +721,7 @@ class PlayerService {
     try {
       _bufferManager.stop();
       _tracksSub?.cancel();
+      _audioCheckTimer?.cancel();
       _bufferTrackSub?.cancel();
       _completedSub?.cancel();
       _bufferTrackTimer?.cancel();

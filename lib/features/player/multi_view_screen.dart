@@ -33,7 +33,12 @@ class _MultiViewScreenState extends ConsumerState<MultiViewScreen> {
     for (var i = 0; i < widget.channels.length && i < 9; i++) {
       final player = Player();
       _configurePlayer(player);
-      final controller = VideoController(player);
+      final controller = VideoController(
+        player,
+        configuration: const VideoControllerConfiguration(
+          enableHardwareAcceleration: true,
+        ),
+      );
       _cells.add(_StreamCell(
         player: player,
         controller: controller,

@@ -21,8 +21,10 @@ class AdaptiveBufferManager {
   static const _prefsKey = 'adaptive_buffer_profiles';
 
   // Buffer tier definitions (mpv properties)
-  // All tiers: never pause playback on empty buffer — keep playing and let
-  // the stream recover naturally or trigger auto-failover instead.
+  //
+  // VOD tiers: never pause playback on empty buffer — keep playing and let
+  // the stream recover naturally or trigger auto-failover instead. Large
+  // readahead is fine because VOD playlists expose the whole file.
   // Tiers differ only in readahead aggressiveness.
   static const _tierConfig = <String, Map<String, String>>{
     'fast': {
@@ -57,6 +59,49 @@ class AdaptiveBufferManager {
     },
   };
 
+  // Live tier definitions (mpv properties)
+  //
+  // Live HLS exposes only a short sliding window (often ~30-40s), so huge
+  // readahead/cache targets are pointless and can never be reached. More
+  // importantly, heavy live streams (e.g. 4K60 10-bit HEVC ~20 Mbps) need a
+  // primed buffer before the first frame — mirroring bare mpv's defaults:
+  //   - cache-pause-initial: build a small buffer before starting playback
+  //   - cache-pause: re-buffer on underrun instead of stuttering forever
+  // Prolonged stalls still surface through the buffering stream and trigger
+  // auto-failover, so failover behavior is preserved.
+  static const _liveTierConfig = <String, Map<String, String>>{
+    'fast': {
+      'cache': 'yes',
+      'cache-secs': '20',
+      'cache-pause': 'yes',
+      'cache-pause-initial': 'yes',
+      'cache-pause-wait': '1',
+      'demuxer-max-bytes': '256M',
+      'demuxer-max-back-bytes': '64M',
+      'demuxer-readahead-secs': '10',
+    },
+    'normal': {
+      'cache': 'yes',
+      'cache-secs': '30',
+      'cache-pause': 'yes',
+      'cache-pause-initial': 'yes',
+      'cache-pause-wait': '1',
+      'demuxer-max-bytes': '256M',
+      'demuxer-max-back-bytes': '64M',
+      'demuxer-readahead-secs': '20',
+    },
+    'aggressive': {
+      'cache': 'yes',
+      'cache-secs': '60',
+      'cache-pause': 'yes',
+      'cache-pause-initial': 'yes',
+      'cache-pause-wait': '2',
+      'demuxer-max-bytes': '512M',
+      'demuxer-max-back-bytes': '128M',
+      'demuxer-readahead-secs': '40',
+    },
+  };
+
   static const _tierOrder = ['fast', 'normal', 'aggressive'];
 
   /// Seconds of stable buffer before downgrading tier.
@@ -75,6 +120,10 @@ class AdaptiveBufferManager {
   String _currentTier = 'normal';
   String? _currentUrl;
 
+  /// Whether the active stream is live (HLS without ENDLIST / short window).
+  /// Selects the live tier table, which primes a small buffer before play.
+  bool _isLive = false;
+
   // Health tracking — reset per stream
   int _stableSeconds = 0;
   int _stallCount = 0;
@@ -83,9 +132,17 @@ class AdaptiveBufferManager {
   String get currentTier => _currentTier;
 
   /// Apply buffer settings for a stream URL and begin monitoring.
-  Future<void> applyForStream(String url, PlayerService ps) async {
+  ///
+  /// [isLive] selects the live tier table (small buffer + initial pause) so
+  /// heavy live streams prime properly; VOD keeps the large-readahead tiers.
+  Future<void> applyForStream(
+    String url,
+    PlayerService ps, {
+    bool isLive = false,
+  }) async {
     _monitorTimer?.cancel();
     _currentUrl = url;
+    _isLive = isLive;
     _stableSeconds = 0;
     _stallCount = 0;
 
@@ -168,7 +225,8 @@ class AdaptiveBufferManager {
   }
 
   Future<void> _applyTier(String tier, PlayerService ps) async {
-    final config = _tierConfig[tier] ?? _tierConfig['normal']!;
+    final table = _isLive ? _liveTierConfig : _tierConfig;
+    final config = table[tier] ?? table['normal']!;
     for (final entry in config.entries) {
       await _setMpvProperty(ps, entry.key, entry.value);
     }
