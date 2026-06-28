@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path/path.dart' as p;
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -61,7 +62,10 @@ Future<void> _exportBackup(BuildContext context, WidgetRef ref) async {
       } else if (action == 'save') {
         final savePath = await FilePicker.platform.saveFile(
           dialogTitle: 'Save Backup',
-          fileName: path.split('/').last,
+          // Use basename (cross-platform): splitting on '/' kept the whole
+          // Windows path (backslash-separated) as the filename, which made the
+          // save dialog fail.
+          fileName: p.basename(path),
           type: FileType.any,
         );
         if (savePath != null) {

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 
 import 'provider_manager.dart';
 
@@ -73,6 +75,30 @@ class _AddProviderPageState extends ConsumerState<_AddProviderPage> {
     if (value == null || value.trim().isEmpty) return 'Required';
     if (!value.trim().startsWith('http')) return 'URL must start with http';
     return null;
+  }
+
+  /// M3U source can be a remote URL or a picked local file path.
+  String? _validateM3uSource(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Enter a URL or import a file';
+    }
+    return null;
+  }
+
+  Future<void> _pickM3uFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Import M3U File',
+      type: FileType.custom,
+      allowedExtensions: const ['m3u', 'm3u8', 'txt'],
+    );
+    final path = result?.files.single.path;
+    if (path == null) return;
+    setState(() {
+      _m3uUrl.text = path;
+      if (_m3uName.text.trim().isEmpty) {
+        _m3uName.text = p.basenameWithoutExtension(path);
+      }
+    });
   }
 
   Future<void> _submit() async {
@@ -236,22 +262,30 @@ class _AddProviderPageState extends ConsumerState<_AddProviderPage> {
       TextFormField(
         controller: _m3uUrl,
         decoration: const InputDecoration(
-          labelText: 'M3U URL',
-          hintText: 'http://...',
+          labelText: 'M3U URL or File',
+          hintText: 'http://…  or import a local file',
         ),
-        validator: _validateUrl,
+        validator: _validateM3uSource,
         keyboardType: TextInputType.url,
         textInputAction: TextInputAction.done,
         onFieldSubmitted: (_) => _submit(),
       ),
       const SizedBox(height: 8),
-      Align(
-        alignment: Alignment.centerRight,
-        child: TextButton.icon(
-          onPressed: () => _pasteUrl(_m3uUrl),
-          icon: const Icon(Icons.paste, size: 18),
-          label: const Text('Paste URL'),
-        ),
+      Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          TextButton.icon(
+            onPressed: _pickM3uFile,
+            icon: const Icon(Icons.folder_open, size: 18),
+            label: const Text('Import File'),
+          ),
+          const SizedBox(width: 8),
+          TextButton.icon(
+            onPressed: () => _pasteUrl(_m3uUrl),
+            icon: const Icon(Icons.paste, size: 18),
+            label: const Text('Paste URL'),
+          ),
+        ],
       ),
     ];
   }

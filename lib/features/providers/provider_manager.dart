@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -126,35 +129,48 @@ class ProviderManager {
   }
 
   Future<List<Channel>> _refreshM3u(db.Provider provider) async {
-    final dio = Dio();
-    try {
-      final response = await dio.get<String>(provider.url!);
-      final result = _m3uParser.parse(response.data!, providerId: provider.id);
-
-      // Auto-add EPG source from M3U header if present, then refresh it
-      if (result.epgUrl != null && result.epgUrl!.isNotEmpty) {
-        await _autoAddEpgSource(provider.id, provider.name, result.epgUrl!);
-        // Immediately refresh EPG data in background
-        _refreshEpgForProvider(provider.id);
+    final source = provider.url!;
+    final isRemote =
+        source.startsWith('http://') || source.startsWith('https://');
+    String data;
+    if (isRemote) {
+      final dio = Dio();
+      try {
+        final response = await dio.get<String>(source);
+        data = response.data!;
+      } finally {
+        dio.close();
       }
-
-      // Debug: log per-group channel counts
-      final groupCounts = <String, int>{};
-      for (final c in result.channels) {
-        final g = c.groupTitle ?? 'Ungrouped';
-        groupCounts[g] = (groupCounts[g] ?? 0) + 1;
-      }
-      debugPrint(
-        '[M3U] ${provider.name}: ${result.channels.length} total channels, ${groupCounts.length} groups',
-      );
-      for (final entry in groupCounts.entries) {
-        debugPrint('[M3U]   ${entry.key}: ${entry.value}');
-      }
-
-      return result.channels;
-    } finally {
-      dio.close();
+    } else {
+      // Local file import: the provider's "url" holds a file path. Read and
+      // decode tolerantly — m3u files are usually UTF-8 but may carry stray
+      // bytes that would otherwise throw.
+      final bytes = await File(source).readAsBytes();
+      data = utf8.decode(bytes, allowMalformed: true);
     }
+    final result = _m3uParser.parse(data, providerId: provider.id);
+
+    // Auto-add EPG source from M3U header if present, then refresh it
+    if (result.epgUrl != null && result.epgUrl!.isNotEmpty) {
+      await _autoAddEpgSource(provider.id, provider.name, result.epgUrl!);
+      // Immediately refresh EPG data in background
+      _refreshEpgForProvider(provider.id);
+    }
+
+    // Debug: log per-group channel counts
+    final groupCounts = <String, int>{};
+    for (final c in result.channels) {
+      final g = c.groupTitle ?? 'Ungrouped';
+      groupCounts[g] = (groupCounts[g] ?? 0) + 1;
+    }
+    debugPrint(
+      '[M3U] ${provider.name}: ${result.channels.length} total channels, ${groupCounts.length} groups',
+    );
+    for (final entry in groupCounts.entries) {
+      debugPrint('[M3U]   ${entry.key}: ${entry.value}');
+    }
+
+    return result.channels;
   }
 
   Future<List<Channel>> _refreshXtream(db.Provider provider) async {
