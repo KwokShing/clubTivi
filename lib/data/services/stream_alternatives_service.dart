@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -48,6 +49,9 @@ class StreamAlternativesService {
   /// All channels cached for fuzzy fallback.
   List<Channel> _allChannels = [];
 
+  /// Stream URL → channel ID (for reverse lookup after failover).
+  final Map<String, String> _urlToChannelId = {};
+
   StreamAlternativesService(this._db, this._health);
 
   /// Completes when the initial rebuild() finishes.
@@ -59,12 +63,7 @@ class StreamAlternativesService {
       _providerNames[providerId] ?? providerId;
 
   /// Find the channel ID that owns the given stream URL, or null.
-  String? channelIdForUrl(String url) {
-    for (final ch in _allChannels) {
-      if (ch.streamUrl == url) return ch.id;
-    }
-    return null;
-  }
+  String? channelIdForUrl(String url) => _urlToChannelId[url];
 
   /// Rebuild the index. Call on init, after EPG refresh, or provider changes.
   Future<void> rebuild() async {
@@ -74,6 +73,7 @@ class StreamAlternativesService {
     _nameIndex.clear();
     _callSignIndex.clear();
     _providerNames.clear();
+    _urlToChannelId.clear();
 
     final channels = await _db.getAllChannels();
     final mappings = await _db.getAllMappings();
@@ -85,7 +85,9 @@ class StreamAlternativesService {
       for (final p in providers) {
         _providerNames[p.id] = p.name;
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Alternatives] Failed to load provider names: $e');
+    }
 
     // Load vanity names from SharedPreferences
     Map<String, String> vanityNames = {};
@@ -96,7 +98,9 @@ class StreamAlternativesService {
         final decoded = jsonDecode(vanityJson) as Map<String, dynamic>;
         vanityNames = decoded.map((k, v) => MapEntry(k, v as String));
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Alternatives] Failed to parse vanity names: $e');
+    }
 
     // Build channelId → epgChannelId lookup from mappings
     final channelToEpg = <String, String>{};
@@ -106,6 +110,9 @@ class StreamAlternativesService {
 
     for (final ch in _allChannels) {
       if (ch.streamUrl.isEmpty) continue;
+
+      // Reverse URL lookup (last channel wins on duplicate URLs)
+      _urlToChannelId[ch.streamUrl] = ch.id;
 
       // 1. Vanity name index (user-confirmed grouping — highest trust)
       final vanity = vanityNames[ch.id];
@@ -337,7 +344,7 @@ class StreamAlternativesService {
               matchReasons: {reason},
               healthScore: composite,
               providerName: _providerNames[ch.providerId] ?? ch.providerId,
-              hasEpgMatch: epgMatch || (epgChannelId != null && epgChannelId!.isNotEmpty && ch.tvgId != null && ch.tvgId == epgChannelId),
+              hasEpgMatch: epgMatch || (epgChannelId != null && epgChannelId.isNotEmpty && ch.tvgId != null && ch.tvgId == epgChannelId),
             );
             resultsByUrl[ch.streamUrl] = detail;
           }

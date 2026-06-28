@@ -187,7 +187,9 @@ class ShowsRepository {
           if (show.tmdbId != null) {
             return _enrichEpisodesWithTmdb(episodes, show.tmdbId!, seasonNumber);
           }
-        } catch (_) {}
+        } catch (e) {
+          _log.w('TMDB episode enrichment failed for $traktId S$seasonNumber: $e');
+        }
       }
       return episodes;
     }

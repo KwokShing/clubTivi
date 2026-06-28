@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sql;
@@ -586,7 +587,10 @@ Future<void> _quarantineIfCorrupt(File file) async {
         // If rename fails (e.g. cross-device), delete so a clean db can open.
         try {
           await f.delete();
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('[Database] Could not move or delete corrupt db file '
+              '${f.path}: $e');
+        }
       }
     }
   }

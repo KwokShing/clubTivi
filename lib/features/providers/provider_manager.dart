@@ -235,7 +235,9 @@ class ProviderManager {
     // Also remove the auto-EPG source for this provider
     try {
       await _db.deleteEpgSource('auto_$id');
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Provider] No auto-EPG source to delete for $id: $e');
+    }
     await _db.deleteProvider(id);
   }
 
@@ -281,7 +283,9 @@ class ProviderManager {
         }
       }
       debugPrint('[Logo] EPG icons resolved ${resolved.length} channels');
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Logo] EPG icon resolution failed: $e');
+    }
 
     // Then resolve remaining from tv-logo/tv-logos GitHub repo
     if (needsLogo.isNotEmpty) {
@@ -383,7 +387,9 @@ class ProviderManager {
           map[ec.channelId.toLowerCase()] = ec.iconUrl!;
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Logo] Failed to build EPG icon map: $e');
+    }
     return map;
   }
 
@@ -439,7 +445,9 @@ final databaseProvider = Provider<db.AppDatabase>((ref) {
   ref.onDispose(() async {
     try {
       await database.close();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Database] close on dispose (likely already closed): $e');
+    }
   });
   return database;
 });

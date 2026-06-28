@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:media_kit/src/player/native/player/real.dart' as native_player;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -259,7 +260,9 @@ class AdaptiveBufferManager {
         final tier = map[_urlKey(url)] as String?;
         if (tier != null && _tierConfig.containsKey(tier)) return tier;
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[AdaptiveBuffer] Failed to load tier: $e');
+    }
     return 'normal';
   }
 
@@ -279,6 +282,8 @@ class AdaptiveBufferManager {
         }
       }
       await prefs.setString(_prefsKey, jsonEncode(map));
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[AdaptiveBuffer] Failed to save tier: $e');
+    }
   }
 }

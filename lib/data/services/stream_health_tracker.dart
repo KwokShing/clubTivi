@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Tracks per-stream health metrics for ranking failover alternatives.
@@ -25,7 +26,9 @@ class StreamHealthTracker {
         final map = jsonDecode(json) as Map<String, dynamic>;
         _metrics = map.map((k, v) => MapEntry(k, _StreamMetrics.fromJson(v)));
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[StreamHealth] Failed to load metrics (resetting): $e');
+    }
     _loaded = true;
   }
 
@@ -120,7 +123,9 @@ class StreamHealthTracker {
       }
       final json = _metrics.map((k, v) => MapEntry(k, v.toJson()));
       await prefs.setString(_prefsKey, jsonEncode(json));
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[StreamHealth] Failed to save metrics: $e');
+    }
   }
 }
 

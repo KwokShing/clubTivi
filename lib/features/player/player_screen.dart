@@ -1219,7 +1219,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       try {
         final decoded = jsonDecode(vanityJson) as Map<String, dynamic>;
         vanityNames = decoded.map((k, v) => MapEntry(k, v as String));
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[Player] Failed to parse vanity names: $e');
+      }
     }
 
     final originalName =

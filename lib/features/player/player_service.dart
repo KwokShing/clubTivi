@@ -18,8 +18,6 @@ class PlayerService {
   Player? _player;
   VideoController? _videoController;
   final AdaptiveBufferManager _bufferManager = AdaptiveBufferManager();
-  bool _isBuffering = false;
-  DateTime? _bufferStartTime;
   StreamSubscription<Tracks>? _tracksSub;
 
   // Buffer health tracking (persists across info dialog opens)
@@ -38,9 +36,6 @@ class PlayerService {
 
   /// Timestamp of the last EOF-triggered reload (used to throttle live reloads).
   DateTime? _lastEofReload;
-
-  /// Buffer stall threshold before triggering failover.
-  static const bufferStallThreshold = Duration(seconds: 3);
 
   // Auto-failover state
   String? _currentUrl;
@@ -186,8 +181,6 @@ class PlayerService {
     String? originalName,
     List<String>? failoverGroupUrls,
   }) async {
-    _isBuffering = false;
-    _bufferStartTime = null;
     _consecutiveLowBuffer = 0;
     _playbackStartedAt = DateTime.now();
     _currentUrl = url;
@@ -302,23 +295,6 @@ class PlayerService {
 
   /// Stream of whether playback is playing.
   Stream<bool> get playingStream => player.stream.playing;
-
-  /// Check if buffer stall exceeds threshold (for failover trigger).
-  bool get shouldFailover {
-    if (!_isBuffering || _bufferStartTime == null) return false;
-    return DateTime.now().difference(_bufferStartTime!) > bufferStallThreshold;
-  }
-
-  /// Called when buffering state changes — used by failover engine.
-  void onBufferingChanged(bool buffering) {
-    if (buffering && !_isBuffering) {
-      _isBuffering = true;
-      _bufferStartTime = DateTime.now();
-    } else if (!buffering) {
-      _isBuffering = false;
-      _bufferStartTime = null;
-    }
-  }
 
   /// Refine the live/VOD profile in the background after playback has started,
   /// without blocking initial open. If the stream turns out to be VOD, switch
@@ -446,7 +422,7 @@ class PlayerService {
     _bufferTrackSub = player.stream.buffering.listen((isBuffering) {
       bufferHistory.removeAt(0);
       bufferHistory.add(isBuffering);
-      if (isBuffering && !_isBuffering) bufferEventCount++;
+      if (isBuffering) bufferEventCount++;
     });
 
     _bufferTrackTimer?.cancel();
@@ -552,11 +528,11 @@ class PlayerService {
     // Configure warm player: muted, with loudnorm, no video output
     final np = _warmPlayer!.platform;
     if (np is native_player.NativePlayer) {
-      np.setProperty('vid', 'no'); // disable video decoding
-      np.setProperty('audio-channels', 'stereo');
-      np.setProperty('audio-normalize-downmix', 'yes');
-      np.setProperty('af', 'loudnorm=I=-14:TP=-1:LRA=13');
-      np.setProperty('volume', '0'); // silent
+      _set(np, 'vid', 'no'); // disable video decoding
+      _set(np, 'audio-channels', 'stereo');
+      _set(np, 'audio-normalize-downmix', 'yes');
+      _set(np, 'af', 'loudnorm=I=-14:TP=-1:LRA=13');
+      _set(np, 'volume', '0'); // silent
     }
 
     // Listen for buffering state — when it stops buffering, stream is ready

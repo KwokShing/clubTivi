@@ -11,7 +11,6 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../core/countdown_snackbar.dart';
 import '../../core/restart_widget.dart';
 import '../../core/weather_service.dart';
 import '../../data/datasources/local/database.dart' as db;

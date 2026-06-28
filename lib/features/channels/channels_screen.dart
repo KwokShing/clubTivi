@@ -15,8 +15,6 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/countdown_snackbar.dart';
-import '../../core/fuzzy_match.dart';
-import '../../core/platform_info.dart';
 import '../../core/weather_clock_widget.dart';
 import '../../data/datasources/local/database.dart' as db;
 import '../../data/datasources/remote/tmdb_client.dart';
@@ -47,14 +45,14 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   // _showSearch removed — search bar is always visible in the top navbar
   int _selectedIndex = -1;
   db.Channel? _previewChannel;
-  List<db.EpgProgramme> _nowPlaying = [];
+  /// epgChannelId → current/next programmes, indexed for O(1) lookup.
+  Map<String, List<db.EpgProgramme>> _nowPlayingByEpg = {};
 
   /// Maps channel ID → mapped EPG channel ID (from epg_mappings table)
   Map<String, String> _epgMappings = {};
 
   /// Maps channel ID → user-set vanity name (original name preserved in DB)
   Map<String, String> _vanityNames = {};
-  Set<String> _validEpgChannelIds = {};
   Map<String, String> _rawToPrefixedEpg = {}; // XMLTV channelId → prefixed id
   Map<String, String> _epgNameToId =
       {}; // normalized EPG displayName → prefixed id
@@ -73,13 +71,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   final _channelListController = ScrollController();
   late final ScrollController _guideScrollController;
   Timer? _guideIdleTimer;
-  DateTime? _guideDayStart; // stored for snap-back calculation
   Timer? _searchDebounce;
 
   // Overlay state
-  bool _showOverlay = false;
   // _showDebugOverlay removed — debug info is now a dialog
-  Timer? _overlayTimer;
   Timer? _nowPlayingTimer;
   final _focusNode = FocusNode();
 
@@ -114,8 +109,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   Map<String, List<String>> _providerGroups = {};
   // Track which providers' channels have been loaded into _allChannels
   final Set<String> _loadedProviders = {};
-  // True while background is still loading all channels
-  bool _backgroundLoading = false;
   // Favorite lists state
   List<db.FavoriteList> _favoriteLists = [];
   Set<String> _favoritedChannelIds = {};
@@ -136,7 +129,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   /// channelId → list of group memberships (for fast player lookup)
   Map<String, List<db.FailoverGroupMembership>> _failoverGroupIndex = {};
   final Set<int> _expandedFailoverGroups = {};
-  bool _lastClickShift = false;
 
   // Time format
   bool _use24HourTime = false;
@@ -262,8 +254,18 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         : await database.getNowPlaying(epgChannelIds.toList());
     if (!mounted) return;
     setState(() {
-      _nowPlaying = nowPlaying;
+      _setNowPlaying(nowPlaying);
     });
+  }
+
+  /// Replace the now-playing list and rebuild the epgChannelId index so
+  /// per-channel lookups are O(1) instead of scanning the whole list.
+  void _setNowPlaying(List<db.EpgProgramme> programmes) {
+    final index = <String, List<db.EpgProgramme>>{};
+    for (final p in programmes) {
+      (index[p.epgChannelId] ??= []).add(p);
+    }
+    _nowPlayingByEpg = index;
   }
 
   String _normalizeName(String name) {
@@ -443,7 +445,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _guideScrollController.dispose();
     _guideIdleTimer?.cancel();
     _searchDebounce?.cancel();
-    _overlayTimer?.cancel();
     _nowPlayingTimer?.cancel();
     _volumeOverlayTimer?.cancel();
     _topBarTimer?.cancel();
@@ -477,7 +478,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       try {
         final decoded = jsonDecode(vanityJson) as Map<String, dynamic>;
         _vanityNames = decoded.map((k, v) => MapEntry(k, v as String));
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[Channels] Failed to parse vanity names: $e');
+      }
     }
 
     // ── Micro-phase 2: favorite channels (direct ID query, ~18 rows) ──
@@ -543,7 +546,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
     // ── Background: load all provider channels incrementally ──
     // ── Background: load all provider channels in one batch ──
-    _backgroundLoading = true;
     final allNewChannels = <db.Channel>[];
     final existingIds = _allChannels.map((c) => c.id).toSet();
     for (final provider in providers) {
@@ -565,7 +567,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       _allChannels = [..._allChannels, ...allNewChannels];
       _applyFilters();
     });
-    _backgroundLoading = false;
 
     // Re-index EPG with full channel set
     if (mounted) _loadEpgData(database, _allChannels, favChannelIds);
@@ -704,9 +705,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
     if (!mounted) return;
     setState(() {
-      _nowPlaying = nowPlaying;
+      _setNowPlaying(nowPlaying);
       _epgMappings = epgMap;
-      _validEpgChannelIds = validIds;
       _rawToPrefixedEpg = rawToPrefixed;
       _epgNameToId = epgNameToId;
       _epgExactNameToId = epgExactNameToId;
@@ -728,7 +728,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         final decoded = jsonDecode(tsJson) as Map<String, dynamic>;
         _epgTimeshifts.clear();
         decoded.forEach((k, v) => _epgTimeshifts[k] = v as int);
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[Channels] Failed to parse EPG timeshifts: $e');
+      }
     }
     final lastGroup = prefs.getString(_kLastGroup);
     final lastChannelId = prefs.getString(_kLastChannelId);
@@ -969,15 +971,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _showInfoOverlay(channel, swapTo);
   }
 
-  void _showInfoOverlay(db.Channel channel, int index) {
-    setState(() => _showOverlay = true);
-
-    // Reset auto-hide timer
-    _overlayTimer?.cancel();
-    _overlayTimer = Timer(const Duration(seconds: 5), () {
-      if (mounted) setState(() => _showOverlay = false);
-    });
-  }
+  /// Selecting a channel updates the preview; the old auto-hiding info
+  /// overlay was removed, so this is now a no-op kept for its call sites.
+  void _showInfoOverlay(db.Channel channel, int index) {}
 
   Future<void> _goFullscreen(db.Channel channel) async {
     final channelMaps = _filteredChannels
@@ -1149,33 +1145,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     return null;
   }
 
-  /// Levenshtein edit distance between two strings.
-  static int _editDistance(String a, String b) {
-    if (a == b) return 0;
-    if (a.isEmpty) return b.length;
-    if (b.isEmpty) return a.length;
-
-    // Use two rows instead of full matrix for memory efficiency
-    var prev = List<int>.generate(b.length + 1, (i) => i);
-    var curr = List<int>.filled(b.length + 1, 0);
-
-    for (var i = 1; i <= a.length; i++) {
-      curr[0] = i;
-      for (var j = 1; j <= b.length; j++) {
-        final cost = a[i - 1] == b[j - 1] ? 0 : 1;
-        curr[j] = [
-          curr[j - 1] + 1, // insert
-          prev[j] + 1, // delete
-          prev[j - 1] + cost, // replace
-        ].reduce((a, b) => a < b ? a : b);
-      }
-      final tmp = prev;
-      prev = curr;
-      curr = tmp;
-    }
-    return prev[b.length];
-  }
-
   String _getProviderName(String providerId) {
     for (final p in _providers) {
       if (p.id == providerId) return p.name;
@@ -1186,8 +1155,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   String? _getChannelNowPlaying(db.Channel channel) {
     final epgId = _getEpgId(channel);
     if (epgId == null) return null;
-    final match = _nowPlaying.where((p) => p.epgChannelId == epgId).toList();
-    return match.isNotEmpty ? match.first.title : null;
+    final match = _nowPlayingByEpg[epgId];
+    return (match != null && match.isNotEmpty) ? match.first.title : null;
   }
 
   /// Display name for a channel — vanity name if set, otherwise original name.
@@ -1213,25 +1182,14 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     }
   }
 
-  /// All current/upcoming programme titles for a channel (for search).
-  List<String> _getChannelProgrammeTitles(db.Channel channel) {
-    final epgId = _getEpgId(channel);
-    if (epgId == null) return const [];
-    return _nowPlaying
-        .where((p) => p.epgChannelId == epgId)
-        .map((p) => p.title)
-        .toList();
-  }
-
   db.EpgProgramme? _getEpgProgramme(db.Channel channel) {
     final epgId = _getEpgId(channel);
     if (epgId == null) return null;
     final shift = _epgTimeshifts[channel.id] ?? 0;
     final adjusted = DateTime.now().subtract(Duration(hours: shift));
-    final matches = _nowPlaying
+    final matches = (_nowPlayingByEpg[epgId] ?? const [])
         .where(
           (p) =>
-              p.epgChannelId == epgId &&
               !p.start.isAfter(adjusted) &&
               p.stop.isAfter(adjusted),
         )
@@ -1244,9 +1202,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     if (epgId == null) return null;
     final current = _getEpgProgramme(channel);
     if (current == null) return null;
-    final matches = _nowPlaying
+    final matches = (_nowPlayingByEpg[epgId] ?? const [])
         .where(
-          (p) => p.epgChannelId == epgId && !p.start.isBefore(current.stop),
+          (p) => !p.start.isBefore(current.stop),
         )
         .toList();
     matches.sort((a, b) => a.start.compareTo(b.start));
@@ -1325,7 +1283,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         _imdbIdCache[key] = detail.imdbId;
         if (mounted) setState(() {});
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Channels] IMDB id resolution failed for "$title": $e');
+    }
   }
 
   void _resetGuideIdleTimer(DateTime dayStart) {
@@ -1712,7 +1672,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           _searchDebounce?.cancel();
                           _searchQuery = value;
                           _searchDebounce = Timer(
-                            const Duration(seconds: 2),
+                            const Duration(milliseconds: 400),
                             () {
                               if (mounted) setState(() => _applyFilters());
                             },
@@ -2797,10 +2757,24 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   }
 
   /// Count channels in a specific provider group.
+  ///
+  /// Memoized: the per-group counts are computed once and reused until the
+  /// [_allChannels] list reference changes, so building the sidebar tree is
+  /// O(channels) total rather than O(groups × channels).
+  List<db.Channel>? _groupCountSource;
+  Map<String, int> _groupCountCache = {};
+
   int _countChannelsInGroup(String providerId, String groupTitle) {
-    return _allChannels
-        .where((c) => c.providerId == providerId && c.groupTitle == groupTitle)
-        .length;
+    if (!identical(_groupCountSource, _allChannels)) {
+      _groupCountSource = _allChannels;
+      final counts = <String, int>{};
+      for (final c in _allChannels) {
+        final key = '${c.providerId}\x00${c.groupTitle ?? ''}';
+        counts[key] = (counts[key] ?? 0) + 1;
+      }
+      _groupCountCache = counts;
+    }
+    return _groupCountCache['$providerId\x00$groupTitle'] ?? 0;
   }
 
   Widget _buildTreeSection(
@@ -3942,7 +3916,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                     bottom: 0,
                                     width: totalWidth,
                                     child: _buildGuideRowProgrammes(
-                                      epgMember!,
+                                      epgMember,
                                       database,
                                       dayStart,
                                       dayEnd,
