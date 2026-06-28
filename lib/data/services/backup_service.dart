@@ -7,6 +7,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../datasources/local/database.dart';
+
 final _log = Logger(printer: SimplePrinter());
 
 /// Keys in SharedPreferences to include in backup.
@@ -30,12 +32,21 @@ const _backupPrefPrefixes = [
 /// the SQLite database and SharedPreferences snapshot.
 class BackupService {
   /// Export all data to a `.clubtivi` backup file.
-  static Future<String> exportBackup() async {
+  static Future<String> exportBackup(AppDatabase db) async {
     final archive = Archive();
 
     // 1. SQLite database
     final dir = await getApplicationSupportDirectory();
     final dbFile = File(p.join(dir.path, 'clubtivi', 'clubtivi.db'));
+    // The DB runs in WAL mode, so the most recent writes live in the
+    // `clubtivi.db-wal` sidecar and may not yet be in the main file. Flush the
+    // WAL into the main db first so the copied file is complete and consistent
+    // (otherwise the backup is a stale / partial snapshot).
+    try {
+      await db.customStatement('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (e) {
+      _log.w('Backup: WAL checkpoint failed (continuing): $e');
+    }
     if (await dbFile.exists()) {
       final bytes = await dbFile.readAsBytes();
       archive.addFile(ArchiveFile('clubtivi.db', bytes.length, bytes));
@@ -81,7 +92,7 @@ class BackupService {
   }
 
   /// Import data from a `.clubtivi` backup file.
-  static Future<String> importBackup(String filePath) async {
+  static Future<String> importBackup(String filePath, AppDatabase db) async {
     final file = File(filePath);
     if (!await file.exists()) throw Exception('Backup file not found');
 
@@ -105,6 +116,23 @@ class BackupService {
       final dir = await getApplicationSupportDirectory();
       final dbPath = p.join(dir.path, 'clubtivi', 'clubtivi.db');
       await File(dbPath).parent.create(recursive: true);
+
+      // Close the live connection before replacing the file. Overwriting the
+      // main db underneath an open WAL connection leaves the old `-wal`/`-shm`
+      // sidecars pointing at a now-different file, which SQLite reports as
+      // "database disk image is malformed" (SQLITE_CORRUPT) on the next write.
+      try {
+        await db.close();
+      } catch (e) {
+        _log.w('Import: closing db failed (continuing): $e');
+      }
+      // Remove the stale WAL/SHM sidecars — they belong to the OLD database and
+      // would corrupt the freshly-imported main file.
+      for (final suffix in const ['-wal', '-shm']) {
+        final sidecar = File('$dbPath$suffix');
+        if (await sidecar.exists()) await sidecar.delete();
+      }
+
       await File(dbPath).writeAsBytes(dbArchiveFile.content as List<int>);
       summary += 'Database restored\n';
     }

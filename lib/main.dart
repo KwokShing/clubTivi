@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app/app.dart';
+import 'core/restart_widget.dart';
 
 void main() async {
   // Catch all uncaught async errors — prevent app crash
@@ -27,7 +28,9 @@ void main() async {
         // Don't crash — just log
       };
 
-      runApp(const ProviderScope(child: ClubTiviApp()));
+      runApp(
+        const RestartWidget(child: ProviderScope(child: ClubTiviApp())),
+      );
     },
     (error, stack) {
       // Uncaught async errors land here instead of crashing

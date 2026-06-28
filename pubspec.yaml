@@ -26,6 +26,7 @@ dependencies:
   # Local database (SQLite)
   drift: ^2.22.1
   sqlite3_flutter_libs: ^0.5.28
+  sqlite3: ^2.9.4
 
   # Routing
   go_router: ^14.8.1

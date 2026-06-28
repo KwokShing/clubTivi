@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/countdown_snackbar.dart';
+import '../../core/restart_widget.dart';
 import '../../core/weather_service.dart';
 import '../../data/datasources/local/database.dart' as db;
 import '../../data/services/backup_service.dart';
@@ -22,14 +23,14 @@ import '../shows/shows_providers.dart';
 import '../../data/datasources/remote/trakt_client.dart';
 import '../../data/datasources/remote/tmdb_client.dart';
 
-Future<void> _exportBackup(BuildContext context) async {
+Future<void> _exportBackup(BuildContext context, WidgetRef ref) async {
   try {
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (_) => const Center(child: CircularProgressIndicator()),
     );
-    final path = await BackupService.exportBackup();
+    final path = await BackupService.exportBackup(ref.read(databaseProvider));
     if (context.mounted) Navigator.of(context).pop();
     if (context.mounted) {
       // Offer to save to a user-chosen location or share
@@ -88,7 +89,7 @@ Future<void> _exportBackup(BuildContext context) async {
   }
 }
 
-Future<void> _importBackup(BuildContext context) async {
+Future<void> _importBackup(BuildContext context, WidgetRef ref) async {
   try {
     final result = await FilePicker.platform.pickFiles(type: FileType.any);
     if (result == null || result.files.isEmpty) return;
@@ -124,24 +125,29 @@ Future<void> _importBackup(BuildContext context) async {
       barrierDismissible: false,
       builder: (_) => const Center(child: CircularProgressIndicator()),
     );
-    final summary = await BackupService.importBackup(filePath);
+    final summary = await BackupService.importBackup(
+      filePath,
+      ref.read(databaseProvider),
+    );
     if (context.mounted) Navigator.of(context).pop();
     if (context.mounted) {
       await showDialog(
         context: context,
+        barrierDismissible: false,
         builder: (ctx) => AlertDialog(
           title: const Text('Backup Restored'),
-          content: Text(
-            '$summary\n\nPlease restart the app for changes to take effect.',
-          ),
+          content: Text('$summary\n\nThe app will now reload.'),
           actions: [
             FilledButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('OK'),
+              child: const Text('Reload'),
             ),
           ],
         ),
       );
+      // Full in-process restart so the freshly-imported database and prefs are
+      // reopened everywhere — no manual relaunch needed.
+      if (context.mounted) RestartWidget.restart(context);
     }
   } catch (e) {
     if (context.mounted) {
@@ -335,14 +341,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         'Save providers, EPG, favorites, API keys',
                       ),
                       trailing: const Icon(Icons.chevron_right),
-                      onTap: () => _exportBackup(context),
+                      onTap: () => _exportBackup(context, ref),
                     ),
                     ListTile(
                       leading: const Icon(Icons.download_rounded),
                       title: const Text('Import Backup'),
                       subtitle: const Text('Restore from a .clubtivi file'),
                       trailing: const Icon(Icons.chevron_right),
-                      onTap: () => _importBackup(context),
+                      onTap: () => _importBackup(context, ref),
                     ),
                   ],
                 ),

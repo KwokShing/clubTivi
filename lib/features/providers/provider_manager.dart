@@ -417,7 +417,14 @@ class ProviderLimitException implements Exception {
 /// Riverpod provider for the database.
 final databaseProvider = Provider<db.AppDatabase>((ref) {
   final database = db.AppDatabase();
-  ref.onDispose(() => database.close());
+  // Close defensively: a backup restore closes the connection before replacing
+  // the file, then triggers an app restart which disposes this provider and
+  // would otherwise close an already-closed database.
+  ref.onDispose(() async {
+    try {
+      await database.close();
+    } catch (_) {}
+  });
   return database;
 });
 

@@ -3,6 +3,7 @@ import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:sqlite3/sqlite3.dart' as sql;
 import 'package:uuid/uuid.dart';
 
 import 'tables.dart';
@@ -535,8 +536,60 @@ LazyDatabase _openConnection() {
       }
     }
 
+    // Corruption recovery: a restored backup (or an interrupted write) can
+    // leave a malformed database that bricks the app — reads return nothing
+    // and writes throw "database disk image is malformed". If the existing
+    // file fails an integrity check, quarantine it and let drift recreate a
+    // fresh database so the app stays usable. Only triggers on a definite
+    // corruption signal, so healthy data is never touched.
+    if (await file.exists()) {
+      await _quarantineIfCorrupt(file);
+    }
+
     return NativeDatabase.createInBackground(file);
   });
+}
+
+/// Runs a `PRAGMA quick_check` on [file]. If it reports corruption, the file
+/// and its WAL/SHM sidecars are renamed aside (kept for manual rescue) so a
+/// clean database can be created in their place.
+Future<void> _quarantineIfCorrupt(File file) async {
+  bool corrupt;
+  try {
+    final db = sql.sqlite3.open(file.path);
+    try {
+      final rows = db.select('PRAGMA quick_check');
+      final first = rows.isNotEmpty ? rows.first.values.first : null;
+      corrupt = first is! String || first.toLowerCase() != 'ok';
+    } on sql.SqliteException {
+      // Malformed surfaced during the check itself → definitely corrupt.
+      corrupt = true;
+    } finally {
+      db.dispose();
+    }
+  } catch (_) {
+    // Could not even open the file for checking. This may be a native-library
+    // edge case rather than corruption, so don't risk wiping good data — let
+    // drift open it normally.
+    return;
+  }
+
+  if (!corrupt) return;
+
+  final ts = DateTime.now().millisecondsSinceEpoch;
+  for (final suffix in const ['', '-wal', '-shm']) {
+    final f = File('${file.path}$suffix');
+    if (await f.exists()) {
+      try {
+        await f.rename('${file.path}.corrupt-$ts$suffix');
+      } catch (_) {
+        // If rename fails (e.g. cross-device), delete so a clean db can open.
+        try {
+          await f.delete();
+        } catch (_) {}
+      }
+    }
+  }
 }
 
 /// Lightweight struct for failover group membership lookups.

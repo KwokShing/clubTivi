@@ -617,6 +617,42 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   controls: NoVideoControls,
                 ),
 
+                // Centered buffering indicator — shown while the stream is
+                // (re)buffering, auto-hidden the moment playback resumes.
+                Center(
+                  child: StreamBuilder<bool>(
+                    stream: playerService.bufferingStream,
+                    initialData: playerService.player.state.buffering,
+                    builder: (context, snapshot) {
+                      final buffering = snapshot.data ?? false;
+                      return AnimatedOpacity(
+                        opacity: buffering ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: IgnorePointer(
+                          ignoring: !buffering,
+                          child: Container(
+                            padding: const EdgeInsets.all(20),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: const SizedBox(
+                              width: 48,
+                              height: 48,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 3,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Color(0xFF6C5CE7),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+
                 // TiviMate-style control bar overlay
                 PlayerControlBar(
                   isCasting: ref.read(castServiceProvider).isCasting,
