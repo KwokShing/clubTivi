@@ -29,6 +29,18 @@ class PlayerControlBar extends ConsumerStatefulWidget {
   final bool subtitlesEnabled;
   final int audioTrackCount;
 
+  /// Whether the bar is shown. Visibility is owned by the parent so the
+  /// control bar and the rest of the player overlay show/hide together.
+  final bool visible;
+
+  /// Called when the user interacts with the bar (tap or pointer move over
+  /// it) so the parent can reset its auto-hide timer.
+  final VoidCallback? onInteraction;
+
+  /// Called when the pointer enters (true) or leaves (false) the bar so the
+  /// parent can pause auto-hide while the mouse hovers the controls.
+  final ValueChanged<bool>? onHoverChanged;
+
   const PlayerControlBar({
     super.key,
     this.onCastTap,
@@ -48,6 +60,9 @@ class PlayerControlBar extends ConsumerStatefulWidget {
     this.hasSubtitles = false,
     this.subtitlesEnabled = false,
     this.audioTrackCount = 0,
+    this.visible = true,
+    this.onInteraction,
+    this.onHoverChanged,
   });
 
   @override
@@ -55,10 +70,6 @@ class PlayerControlBar extends ConsumerStatefulWidget {
 }
 
 class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
-  bool _visible = true;
-  bool _isHoveringBar = false;
-  Timer? _hideTimer;
-
   // Player state cached from streams
   double _volume = 100.0;
   bool _playing = false;
@@ -84,7 +95,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
   @override
   void initState() {
     super.initState();
-    _scheduleHide();
     _subscribeToPlayer();
     _startInfoPolling();
   }
@@ -154,24 +164,11 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
     }));
   }
 
-  // --- Visibility / auto-hide ---
-
-  void _scheduleHide() {
-    _hideTimer?.cancel();
-    if (_isHoveringBar) return; // don't hide while mouse is over the bar
-    _hideTimer = Timer(const Duration(seconds: 5), () {
-      if (mounted && !_isHoveringBar) setState(() => _visible = false);
-    });
-  }
-
-  void _onInteraction() {
-    if (!_visible) {
-      setState(() => _visible = true);
-    }
-    _scheduleHide();
-  }
-
   // --- Helpers ---
+
+  /// Reset the parent's auto-hide timer after a user interaction with the
+  /// controls (thin wrapper kept so existing call sites stay unchanged).
+  void _scheduleHide() => widget.onInteraction?.call();
 
   String _formatDuration(Duration d) {
     final h = d.inHours;
@@ -203,7 +200,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
 
   @override
   void dispose() {
-    _hideTimer?.cancel();
     _fpsTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
@@ -213,30 +209,29 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) {
-        _isHoveringBar = true;
-        _hideTimer?.cancel();
-        if (!_visible) setState(() => _visible = true);
-      },
-      onExit: (_) {
-        _isHoveringBar = false;
-        _scheduleHide();
-      },
-      onHover: (_) => _onInteraction(),
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: _onInteraction,
-        child: AnimatedOpacity(
-          opacity: _visible ? 1.0 : 0.0,
-          duration: const Duration(milliseconds: 300),
-          child: IgnorePointer(
-            ignoring: !_visible,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                // ── Top row ──
-                Container(
+    return IgnorePointer(
+      ignoring: !widget.visible,
+      child: AnimatedOpacity(
+        opacity: widget.visible ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 300),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            // Only the actual bar captures hover/taps, so the empty area above
+            // it lets screen taps reach the parent (toggle) and the pointer
+            // resting on the video doesn't keep the bar from auto-hiding.
+            MouseRegion(
+              onEnter: (_) => widget.onHoverChanged?.call(true),
+              onExit: (_) => widget.onHoverChanged?.call(false),
+              onHover: (_) => widget.onInteraction?.call(),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => widget.onInteraction?.call(),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // ── Top row ──
+                    Container(
                   color: Colors.black.withValues(alpha: 0.7),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -510,9 +505,11 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
                     ],
                   ),
                 ),
-              ],
+                  ],
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

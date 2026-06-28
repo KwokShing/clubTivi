@@ -64,6 +64,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   // Overlay timer
   Timer? _overlayTimer;
+  bool _controlBarHovered = false;
 
   // EPG state
   String? _nowPlayingTitle;
@@ -437,9 +438,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   void _autoHideOverlay() {
     _overlayTimer?.cancel();
+    if (_controlBarHovered) return; // keep visible while mouse is over controls
     _overlayTimer = Timer(const Duration(seconds: 3), () {
       if (mounted) setState(() => _showOverlay = false);
     });
+  }
+
+  void _showControls() {
+    if (!_showOverlay) setState(() => _showOverlay = true);
+    _autoHideOverlay();
   }
 
   void _toggleOverlay() {
@@ -635,6 +642,17 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
                 // TiviMate-style control bar overlay
                 PlayerControlBar(
+                  visible: _showOverlay,
+                  onInteraction: _showControls,
+                  onHoverChanged: (hovering) {
+                    _controlBarHovered = hovering;
+                    if (hovering) {
+                      _overlayTimer?.cancel();
+                      if (!_showOverlay) setState(() => _showOverlay = true);
+                    } else {
+                      _autoHideOverlay();
+                    }
+                  },
                   isCasting: ref.read(castServiceProvider).isCasting,
                   isFavorite: _isFavorite,
                   hasSubtitles: _subtitleTracks.isNotEmpty,
