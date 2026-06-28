@@ -2360,6 +2360,42 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
             controls: NoVideoControls,
             fit: BoxFit.fill,
           ),
+          // Centered buffering indicator — shown while (re)buffering, hidden
+          // the moment playback resumes (also shown in the inline/windowed
+          // player, not just fullscreen).
+          Center(
+            child: StreamBuilder<bool>(
+              stream: playerService.bufferingStream,
+              initialData: playerService.player.state.buffering,
+              builder: (context, snapshot) {
+                final buffering = snapshot.data ?? false;
+                return AnimatedOpacity(
+                  opacity: buffering ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 200),
+                  child: IgnorePointer(
+                    ignoring: !buffering,
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const SizedBox(
+                        width: 32,
+                        height: 32,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 3,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Color(0xFF6C5CE7),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
           if (_showVolumeOverlay)
             Positioned(
               top: 8,
