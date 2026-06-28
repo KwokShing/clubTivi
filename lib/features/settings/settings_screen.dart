@@ -60,6 +60,12 @@ Future<void> _exportBackup(BuildContext context, WidgetRef ref) async {
       if (action == 'share') {
         await SharePlus.instance.share(ShareParams(files: [XFile(path)]));
       } else if (action == 'save') {
+        // file_picker's saveFile behaves differently per platform:
+        //   • Android/iOS: `bytes` are REQUIRED — file_picker writes the file
+        //     itself and returns the saved location.
+        //   • Desktop: returns the chosen path without writing, so we copy
+        //     the backup into it ourselves (passing bytes there is ignored).
+        final isMobile = Platform.isAndroid || Platform.isIOS;
         final savePath = await FilePicker.platform.saveFile(
           dialogTitle: 'Save Backup',
           // Use basename (cross-platform): splitting on '/' kept the whole
@@ -67,9 +73,10 @@ Future<void> _exportBackup(BuildContext context, WidgetRef ref) async {
           // save dialog fail.
           fileName: p.basename(path),
           type: FileType.any,
+          bytes: isMobile ? await File(path).readAsBytes() : null,
         );
         if (savePath != null) {
-          await File(path).copy(savePath);
+          if (!isMobile) await File(path).copy(savePath);
           if (context.mounted) {
             ScaffoldMessenger.of(
               context,
