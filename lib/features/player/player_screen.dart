@@ -212,26 +212,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     playerService.player.stream.tracks.listen((tracks) {
       if (mounted) _loadTrackInfo();
     });
-
-    playerService.bufferingStream.listen((buffering) {
-      playerService.onBufferingChanged(buffering);
-      if (playerService.shouldFailover && _hasAlternativeStreams) {
-        _switchToNextStream();
-      }
-    });
-  }
-
-  bool get _hasAlternativeStreams {
-    final urls = [widget.streamUrl, ...widget.alternativeUrls];
-    return _currentUrlIndex < urls.length - 1;
-  }
-
-  void _switchToNextStream() {
-    setState(() => _currentUrlIndex++);
-    final urls = [widget.streamUrl, ...widget.alternativeUrls];
-    ref
-        .read(playerServiceProvider)
-        .play(urls[_currentUrlIndex], channelName: _currentChannelName);
   }
 
   Future<void> _showCastPicker() async {

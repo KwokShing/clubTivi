@@ -105,15 +105,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   Timer? _topBarTimer;
   bool _mouseInTopBar = false;
 
-  // Failover suggestion
-  StreamSubscription<bool>? _bufferingSub;
   StreamSubscription<List<db.Provider>>? _providersSub;
   StreamSubscription<List<db.Channel>>? _channelsSub;
-  Timer? _failoverTimer;
-  db.Channel? _failoverSuggestion;
-  bool _showFailoverBanner = false;
-  static const _kFailoverEnabled = 'failover_enabled';
-  bool _failoverEnabled = true;
 
   // Provider list for sidebar
   List<db.Provider> _providers = [];
@@ -177,7 +170,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _loadChannels();
     _ensureEpgSources();
     _startTopBarFade();
-    _initFailoverListener();
     _loadSearchHistory();
     // Resolve missing logos on startup (in background)
     ref
@@ -271,93 +263,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     if (!mounted) return;
     setState(() {
       _nowPlaying = nowPlaying;
-    });
-  }
-
-  void _initFailoverListener() async {
-    final prefs = await SharedPreferences.getInstance();
-    _failoverEnabled = prefs.getBool(_kFailoverEnabled) ?? true;
-    final playerService = ref.read(playerServiceProvider);
-    _bufferingSub = playerService.bufferingStream.listen((buffering) {
-      if (!_failoverEnabled) return;
-      if (buffering) {
-        // Start a 5-second timer — if still buffering, suggest alternative
-        _failoverTimer?.cancel();
-        _failoverTimer = Timer(const Duration(seconds: 5), () {
-          if (!mounted) return;
-          _suggestAlternative();
-        });
-      } else {
-        _failoverTimer?.cancel();
-        if (_showFailoverBanner) {
-          setState(() => _showFailoverBanner = false);
-        }
-      }
-    });
-  }
-
-  void _suggestAlternative() {
-    if (_selectedIndex < 0 || _selectedIndex >= _filteredChannels.length)
-      return;
-    final current = _filteredChannels[_selectedIndex];
-    final currentName = current.name
-        .toLowerCase()
-        .replaceAll(
-          RegExp(r'\b(hd|fhd|shd|sd|4k|uhd)\b', caseSensitive: false),
-          '',
-        )
-        .replaceAll(
-          RegExp(r'(us-?[a-z]*\|?|uk-?[a-z]*\|?|ca-?[a-z]*\|?|mx-?[a-z]*\|?)'),
-          '',
-        )
-        .replaceAll(RegExp(r'[\s|()[\]]+'), ' ')
-        .trim();
-
-    // 1. Best: exact same normalized name on a different provider
-    final sameNameDiffProvider = _allChannels
-        .where(
-          (c) =>
-              c.id != current.id &&
-              c.providerId != current.providerId &&
-              _normalizeName(c.name) == currentName,
-        )
-        .toList();
-
-    // 2. Good: exact same normalized name on the same provider (different stream)
-    final sameNameSameProvider = _allChannels
-        .where(
-          (c) =>
-              c.id != current.id &&
-              c.providerId == current.providerId &&
-              _normalizeName(c.name) == currentName,
-        )
-        .toList();
-
-    // 3. Fallback: channels containing key words of the current name
-    final words = currentName
-        .split(RegExp(r'\s+'))
-        .where((w) => w.length > 2)
-        .toList();
-    final fuzzyMatches = words.isEmpty
-        ? <db.Channel>[]
-        : _allChannels
-              .where(
-                (c) =>
-                    c.id != current.id &&
-                    words.every((w) => c.name.toLowerCase().contains(w)),
-              )
-              .toList();
-
-    final candidates = [
-      ...sameNameDiffProvider,
-      ...sameNameSameProvider,
-      ...fuzzyMatches,
-    ];
-    if (candidates.isEmpty) return;
-
-    setState(() {
-      _failoverSuggestion = candidates.first;
-      _showFailoverBanner = true;
     });
   }
 
@@ -500,35 +405,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _searchHistory = prefs.getStringList(_kSearchHistory) ?? [];
   }
 
-  void _acceptFailover() {
-    if (_failoverSuggestion == null) return;
-    final idx = _filteredChannels.indexWhere(
-      (c) => c.id == _failoverSuggestion!.id,
-    );
-    if (idx >= 0) {
-      _selectChannel(idx);
-    } else {
-      // Channel not in current filter — play directly
-      final playerService = ref.read(playerServiceProvider);
-      playerService.play(
-        _failoverSuggestion!.streamUrl,
-        channelId: _failoverSuggestion!.id,
-        epgChannelId: _getEpgId(_failoverSuggestion!),
-        tvgId: _failoverSuggestion!.tvgId,
-        channelName: _failoverSuggestion!.name,
-        vanityName: _vanityNames[_failoverSuggestion!.id],
-        originalName: _failoverSuggestion!.tvgName,
-      );
-      setState(() {
-        _previewChannel = _failoverSuggestion;
-      });
-    }
-    setState(() {
-      _showFailoverBanner = false;
-      _failoverSuggestion = null;
-    });
-  }
-
   void _startTopBarFade() {
     _topBarTimer?.cancel();
     if (_mouseInTopBar || Platform.isAndroid) return;
@@ -571,8 +447,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _nowPlayingTimer?.cancel();
     _volumeOverlayTimer?.cancel();
     _topBarTimer?.cancel();
-    _failoverTimer?.cancel();
-    _bufferingSub?.cancel();
     _providersSub?.cancel();
     _channelsSub?.cancel();
     _longPressTimer?.cancel();
@@ -1681,8 +1555,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                     ),
                   // Preview row at full width (player can extend left)
                   _buildPreviewRow(),
-                  if (_showFailoverBanner && _failoverSuggestion != null)
-                    _buildFailoverBanner(),
                   // Sidebar only next to the guide/channel list below
                   Expanded(
                     child: Row(
@@ -6702,64 +6574,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
           ),
         );
       },
-    );
-  }
-
-  Widget _buildFailoverBanner() {
-    final suggestion = _failoverSuggestion!;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      color: Colors.orange.withValues(alpha: 0.15),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.swap_horiz_rounded,
-            size: 16,
-            color: Colors.orangeAccent,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text.rich(
-              TextSpan(
-                style: const TextStyle(fontSize: 12, color: Colors.white70),
-                children: [
-                  const TextSpan(text: 'Buffering detected. Try '),
-                  TextSpan(
-                    text: suggestion.name,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const TextSpan(text: '?'),
-                ],
-              ),
-            ),
-          ),
-          TextButton(
-            onPressed: _acceptFailover,
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.orangeAccent,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              minimumSize: const Size(0, 28),
-            ),
-            child: const Text('Switch', style: TextStyle(fontSize: 11)),
-          ),
-          IconButton(
-            icon: const Icon(
-              Icons.close_rounded,
-              size: 14,
-              color: Colors.white38,
-            ),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(maxWidth: 24, maxHeight: 24),
-            onPressed: () => setState(() {
-              _showFailoverBanner = false;
-              _failoverSuggestion = null;
-            }),
-          ),
-        ],
-      ),
     );
   }
 

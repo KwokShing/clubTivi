@@ -290,7 +290,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   children: [
                     _UserAgentTile(),
                     _BufferSizeTile(),
-                    _FailoverModeTile(),
                   ],
                 ),
                 _SettingsSection(
@@ -1563,72 +1562,6 @@ class _BufferSizeTileState extends State<_BufferSizeTile> {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString(_key, picked);
           setState(() => _buffer = picked);
-        }
-      },
-    );
-  }
-}
-
-class _FailoverModeTile extends StatefulWidget {
-  @override
-  State<_FailoverModeTile> createState() => _FailoverModeTileState();
-}
-
-class _FailoverModeTileState extends State<_FailoverModeTile> {
-  String _mode = 'cold';
-  static const _key = 'failover_mode';
-  static const _options = {
-    'cold': 'Cold (switch on buffering)',
-    'warm': 'Warm (background probes)',
-    'off': 'Off',
-  };
-
-  @override
-  void initState() {
-    super.initState();
-    SharedPreferences.getInstance().then((prefs) {
-      if (mounted) setState(() => _mode = prefs.getString(_key) ?? 'cold');
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: const Icon(Icons.swap_horizontal_circle_rounded),
-      title: const Text('Failover Mode'),
-      subtitle: Text(_options[_mode] ?? _mode),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: () async {
-        final picked = await showDialog<String>(
-          context: context,
-          builder: (ctx) => SimpleDialog(
-            title: const Text('Failover Mode'),
-            children: [
-              for (final entry in _options.entries)
-                RadioListTile<String>(
-                  title: Text(entry.value),
-                  subtitle: entry.key == 'warm'
-                      ? const Text(
-                          'Monitors alternate streams in background',
-                          style: TextStyle(fontSize: 12),
-                        )
-                      : entry.key == 'cold'
-                      ? const Text(
-                          'Switches only when buffering detected',
-                          style: TextStyle(fontSize: 12),
-                        )
-                      : null,
-                  value: entry.key,
-                  groupValue: _mode,
-                  onChanged: (v) => Navigator.pop(ctx, v),
-                ),
-            ],
-          ),
-        );
-        if (picked != null) {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString(_key, picked);
-          setState(() => _mode = picked);
         }
       },
     );
