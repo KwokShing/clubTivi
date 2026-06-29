@@ -972,14 +972,24 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
   void _selectChannel(int index) {
     if (index < 0 || index >= _filteredChannels.length) return;
-    // Skip if already selected — don't reload the stream
-    if (index == _selectedIndex) return;
+    final channel = _filteredChannels[index];
+    final playerService = ref.read(playerServiceProvider);
+    // Skip only if this exact channel is already playing — otherwise always
+    // (re)load. This lets the pre-selected first channel play on first click,
+    // and lets a single-channel group be played at all.
+    if (playerService.currentChannelId == channel.id) {
+      if (_selectedIndex != index) {
+        setState(() {
+          _selectedIndex = index;
+          _previewChannel = channel;
+        });
+      }
+      return;
+    }
     // Remember current as previous (for back/forth toggle)
     if (_selectedIndex >= 0 && _selectedIndex != index) {
       _previousIndex = _selectedIndex;
     }
-    final channel = _filteredChannels[index];
-    final playerService = ref.read(playerServiceProvider);
 
     // Check if channel belongs to a failover group → pass group URLs
     final groupMemberships = _failoverGroupIndex[channel.id];
