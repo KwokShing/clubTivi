@@ -2722,7 +2722,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       if (filteredGroups.isEmpty) {
         widgets.add(
           _buildTreeItem(
-            prov.name,
+            '${prov.name} (${_countChannelsInProvider(prov.id)})',
             'provider:${prov.id}',
             prov.type == 'xtream'
                 ? Icons.bolt_rounded
@@ -2738,7 +2738,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
             prov.type == 'xtream'
                 ? Icons.bolt_rounded
                 : Icons.playlist_play_rounded,
-            prov.name,
+            '${prov.name} (${_countChannelsInProvider(prov.id)})',
             [
               for (final group in filteredGroups)
                 _buildTreeItem(
@@ -2763,18 +2763,32 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   /// O(channels) total rather than O(groups × channels).
   List<db.Channel>? _groupCountSource;
   Map<String, int> _groupCountCache = {};
+  Map<String, int> _providerCountCache = {};
 
-  int _countChannelsInGroup(String providerId, String groupTitle) {
+  void _ensureChannelCounts() {
     if (!identical(_groupCountSource, _allChannels)) {
       _groupCountSource = _allChannels;
       final counts = <String, int>{};
+      final provCounts = <String, int>{};
       for (final c in _allChannels) {
         final key = '${c.providerId}\x00${c.groupTitle ?? ''}';
         counts[key] = (counts[key] ?? 0) + 1;
+        provCounts[c.providerId] = (provCounts[c.providerId] ?? 0) + 1;
       }
       _groupCountCache = counts;
+      _providerCountCache = provCounts;
     }
+  }
+
+  int _countChannelsInGroup(String providerId, String groupTitle) {
+    _ensureChannelCounts();
     return _groupCountCache['$providerId\x00$groupTitle'] ?? 0;
+  }
+
+  /// Count total channels belonging to a provider (root-level count).
+  int _countChannelsInProvider(String providerId) {
+    _ensureChannelCounts();
+    return _providerCountCache[providerId] ?? 0;
   }
 
   Widget _buildTreeSection(
