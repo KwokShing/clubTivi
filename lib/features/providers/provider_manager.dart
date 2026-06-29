@@ -134,8 +134,10 @@ class ProviderManager {
       );
     }
 
-    // Resolve missing logos in background
-    _resolveChannelLogos(channels).catchError((_) {});
+    // NOTE: logos and EPG are intentionally NOT resolved here. They are loaded
+    // lazily after the channel list is shown (logos via the UI's deferred
+    // resolveAllMissingLogos, EPG via a delayed auto-refresh) so refreshing an
+    // M3U updates the list immediately without competing for the main isolate.
 
     // Debug: log parsed vs unique IDs to detect collisions
     final uniqueIds = channels.map((c) => c.id).toSet();
@@ -184,11 +186,15 @@ class ProviderManager {
       (data, provider.id),
     );
 
-    // Auto-add EPG source from M3U header if present, then refresh it
+    // Auto-add EPG source from M3U header if present, then refresh it lazily
     if (result.epgUrl != null && result.epgUrl!.isNotEmpty) {
       await _autoAddEpgSource(provider.id, provider.name, result.epgUrl!);
-      // Immediately refresh EPG data in background
-      _refreshEpgForProvider(provider.id);
+      // Defer EPG data refresh so the channel list settles first — EPG is not
+      // needed immediately and downloading/parsing it competes for resources.
+      Future.delayed(
+        const Duration(seconds: 8),
+        () => _refreshEpgForProvider(provider.id),
+      );
     }
 
     // Debug: log per-group channel counts
@@ -273,11 +279,6 @@ class ProviderManager {
       debugPrint('[Provider] No auto-EPG source to delete for $id: $e');
     }
     await _db.deleteProvider(id);
-  }
-
-  /// Resolve missing logos in background after provider refresh.
-  Future<void> _resolveChannelLogos(List<Channel> channels) async {
-    await resolveLogosForChannels(channels);
   }
 
   /// Resolve missing logos for a set of channels.
@@ -386,7 +387,7 @@ class ProviderManager {
       '[Logo] ${needsLogo.length} missing (${favorites.length} favorites, ${rest.length} other)',
     );
 
-    // Resolve favorites immediately
+    // Resolve favorites immediately (one write) so they appear quickly.
     if (favorites.isNotEmpty) {
       final resolved = await _resolveLogoBatch(favorites, epgIconMap);
       if (resolved.isNotEmpty) {
@@ -395,15 +396,21 @@ class ProviderManager {
       }
     }
 
-    // Resolve rest in small batches with yields between
+    // Resolve the rest in batches but ACCUMULATE the results and write them in
+    // a single DB write at the end. Writing per-batch fired the full-table
+    // channels watch dozens of times, re-materializing every channel on the
+    // main isolate and blocking interaction. One write = one watch emission.
+    final allResolved = <String, String>{};
     for (var i = 0; i < rest.length; i += _logoBatchSize) {
       final batch = rest.sublist(i, (i + _logoBatchSize).clamp(0, rest.length));
       final resolved = await _resolveLogoBatch(batch, epgIconMap);
-      if (resolved.isNotEmpty) {
-        await _db.updateChannelLogos(resolved);
-      }
-      // Yield to UI between batches
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      allResolved.addAll(resolved);
+      // Yield between batches so matching doesn't hog a turn.
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    if (allResolved.isNotEmpty) {
+      await _db.updateChannelLogos(allResolved);
+      debugPrint('[Logo] Resolved ${allResolved.length} logos (single write)');
     }
 
     debugPrint('[Logo] Resolution complete');

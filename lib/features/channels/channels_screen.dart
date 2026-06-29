@@ -113,6 +113,18 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   String? _channelStructureSignature;
   // Debounce timer for the heavy EPG re-index after a structural change.
   Timer? _epgReindexTimer;
+  // Debounce timer for lazy logo resolution after the channel list settles.
+  Timer? _logoResolveTimer;
+  // Cached EPG-side input for the index isolate (EPG channels + mappings).
+  // EPG data rarely changes while M3U channels are being refreshed, so caching
+  // it avoids re-deserializing thousands of EPG rows on the main isolate on
+  // every structural change. Invalidated by TTL or when EPG sources change.
+  List<({String id, String channelId, String displayName})>? _cachedEpgChannels;
+  List<({String channelId, String epgSourceId, String epgChannelId})>?
+  _cachedEpgMappings;
+  String? _cachedEpgSourceKey;
+  int _cachedEpgInputAt = 0;
+  static const _epgInputTtlMs = 30000;
   // Track which providers' channels have been loaded into _allChannels
   final Set<String> _loadedProviders = {};
   // Favorite lists state
@@ -222,7 +234,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     });
     _channelsSub = database.select(database.channels).watch().listen((all) {
       chanDebounce?.cancel();
-      chanDebounce = Timer(const Duration(milliseconds: 300), () {
+      chanDebounce = Timer(const Duration(milliseconds: 500), () {
         if (mounted) _onChannelsSnapshot(all);
       });
     });
@@ -279,7 +291,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _nowPlayingByEpg = index;
   }
 
-  String _normalizeName(String name) {
+  static String _normalizeName(String name) {
     return name
         .toLowerCase()
         .replaceAll(
@@ -463,6 +475,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _channelsSub?.cancel();
     _longPressTimer?.cancel();
     _epgReindexTimer?.cancel();
+    _logoResolveTimer?.cancel();
     _focusNode.dispose();
     super.dispose();
   }
@@ -682,6 +695,16 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       final database = ref.read(databaseProvider);
       _loadEpgData(database, _allChannels, _favoritedChannelIds);
     });
+
+    // Lazily resolve missing logos after the list settles. Decoupled from the
+    // M3U refresh so importing channels stays fast; logos fill in afterward.
+    _logoResolveTimer?.cancel();
+    _logoResolveTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      ref.read(providerManagerProvider).resolveAllMissingLogos().catchError(
+        (_) {},
+      );
+    });
   }
 
   /// Cheap structural fingerprint of the channel set (id + name + group).
@@ -718,128 +741,90 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     // EPG is being (re)loaded — drop cached programme futures so the guide
     // re-fetches fresh data after an import/refresh.
     _programmeFutureCache.clear();
+
+    // DB reads happen on the main isolate (drift), but the heavy per-channel
+    // regex/index building is offloaded to a background isolate so large
+    // playlists don't make the UI sluggish after a refresh.
     final epgSources = await database.getAllEpgSources();
-    final currentSourceIds = epgSources.map((s) => s.id).toSet();
-    final validIds = <String>{};
-    final rawToPrefixed = <String, String>{};
-    final epgNameToId = <String, String>{};
-    final epgExactNameToId =
-        <String, String>{}; // exact lowercase displayName → id
-    final epgCallSignToId = <String, String>{}; // WABC → prefixed id
-    for (final src in epgSources) {
-      final chs = await database.getEpgChannelsForSource(src.id);
-      for (final ch in chs) {
-        validIds.add(ch.id);
-        rawToPrefixed[ch.channelId.toLowerCase()] = ch.id;
-        // Exact lowercase name match (important for CJK channels)
-        final exactLower = ch.displayName.toLowerCase().trim();
-        if (exactLower.isNotEmpty)
-          epgExactNameToId.putIfAbsent(exactLower, () => ch.id);
-        final normName = _normalizeForEpgMatch(ch.displayName);
-        if (normName.isNotEmpty) epgNameToId[normName] = ch.id;
-        // Index by call sign extracted from channelId (e.g. WABC.us → WABC)
-        final rawUpper = ch.channelId.toUpperCase();
-        final csMatch = RegExp(r'^([WK][A-Z]{2,3})\.').firstMatch(rawUpper);
-        if (csMatch != null) {
-          epgCallSignToId.putIfAbsent(csMatch.group(1)!, () => ch.id);
-        }
-        // Also index from local station IDs like abc.ny.newyork.wabc
-        final dotParts = ch.channelId.split('.');
-        if (dotParts.length >= 4) {
-          final lastPart = dotParts.last.toUpperCase();
-          if (RegExp(r'^[WK][A-Z]{2,3}$').hasMatch(lastPart)) {
-            epgCallSignToId.putIfAbsent(lastPart, () => ch.id);
-          }
-        }
-      }
-    }
+    final currentSourceIds = epgSources.map((s) => s.id).toList();
 
-    final mappings = await database.getAllMappings();
-    final epgMap = <String, String>{};
-    for (final m in mappings) {
-      final directKey = '${m.epgSourceId}_${m.epgChannelId}';
-      if (currentSourceIds.contains(m.epgSourceId)) {
-        epgMap[m.channelId] = directKey;
-      } else {
-        for (final srcId in currentSourceIds) {
-          final candidate = '${srcId}_${m.epgChannelId}';
-          if (validIds.contains(candidate)) {
-            epgMap[m.channelId] = candidate;
-            break;
-          }
+    // Reuse cached EPG channel + mapping records during a burst of refreshes —
+    // EPG data rarely changes while M3U channels are being updated, and
+    // re-deserializing thousands of EPG rows on the main isolate every time is
+    // a major source of jank. Cache is keyed on source ids + lastRefresh and
+    // expires after a short TTL.
+    final sourceKey = [
+      for (final s in epgSources) '${s.id}:${s.lastRefresh?.millisecondsSinceEpoch ?? 0}',
+    ].join(',');
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    List<({String id, String channelId, String displayName})> epgChannelRecords;
+    List<({String channelId, String epgSourceId, String epgChannelId})>
+    mappingRecords;
+    if (_cachedEpgChannels != null &&
+        _cachedEpgMappings != null &&
+        _cachedEpgSourceKey == sourceKey &&
+        nowMs - _cachedEpgInputAt < _epgInputTtlMs) {
+      epgChannelRecords = _cachedEpgChannels!;
+      mappingRecords = _cachedEpgMappings!;
+    } else {
+      epgChannelRecords =
+          <({String id, String channelId, String displayName})>[];
+      for (final src in epgSources) {
+        final chs = await database.getEpgChannelsForSource(src.id);
+        for (final ch in chs) {
+          epgChannelRecords.add(
+            (id: ch.id, channelId: ch.channelId, displayName: ch.displayName),
+          );
         }
       }
+      final mappings = await database.getAllMappings();
+      mappingRecords = [
+        for (final m in mappings)
+          (
+            channelId: m.channelId,
+            epgSourceId: m.epgSourceId,
+            epgChannelId: m.epgChannelId,
+          ),
+      ];
+      _cachedEpgChannels = epgChannelRecords;
+      _cachedEpgMappings = mappingRecords;
+      _cachedEpgSourceKey = sourceKey;
+      _cachedEpgInputAt = nowMs;
     }
+    final channelRecords = [
+      for (final c in allChannels) (id: c.id, name: c.name, tvgId: c.tvgId),
+    ];
 
-    // Build failover name index + EPG scope. This only matters for favorited
-    // channels (and their failover alternates), so skip the expensive O(n)
-    // normalization pass entirely when there are no favorites.
-    final epgScopeIds = <String>{...favChannelIds};
-    if (favChannelIds.isNotEmpty) {
-      final normNameIndex = <String, List<String>>{};
-      for (final c in allChannels) {
-        final norm = _normalizeName(c.name);
-        (normNameIndex[norm] ??= []).add(c.id);
-      }
-      final favChannels = allChannels.where(
-        (c) => favChannelIds.contains(c.id),
-      );
-      for (final fav in favChannels) {
-        final normName = _normalizeName(fav.name);
-        final alts = normNameIndex[normName];
-        if (alts != null) epgScopeIds.addAll(alts);
-      }
-    }
+    if (!mounted) return;
+    final out = await compute(
+      _computeEpgIndex,
+      _EpgIndexInput(
+        epgChannels: epgChannelRecords,
+        mappings: mappingRecords,
+        currentSourceIds: currentSourceIds,
+        channels: channelRecords,
+        favChannelIds: favChannelIds.toList(),
+      ),
+    );
 
-    // Collect EPG channel IDs for now-playing lookup
-    final epgChannelIds = <String>{};
-    for (final c in allChannels) {
-      if (!epgScopeIds.contains(c.id)) continue;
-      final mapped = epgMap[c.id];
-      if (mapped != null && mapped.isNotEmpty) {
-        epgChannelIds.add(mapped);
-        continue;
-      }
-      if (c.tvgId != null && c.tvgId!.isNotEmpty) {
-        final prefixed = rawToPrefixed[c.tvgId!.toLowerCase()];
-        if (prefixed != null) {
-          epgChannelIds.add(prefixed);
-          continue;
-        }
-      }
-      // Fallback: match by normalized channel name
-      final normName = _normalizeForEpgMatch(c.name);
-      if (normName.isNotEmpty) {
-        final byName = epgNameToId[normName];
-        if (byName != null) {
-          epgChannelIds.add(byName);
-          continue;
-        }
-      }
-      // Fallback: match by call sign (WABC, WCBS, WNYW)
-      final callSign = _extractCallSign(c.name, c.tvgId);
-      if (callSign != null) {
-        final byCs = epgCallSignToId[callSign];
-        if (byCs != null) epgChannelIds.add(byCs);
-      }
-    }
+    if (!mounted) return;
     List<db.EpgProgramme> nowPlaying = [];
-    if (epgChannelIds.isNotEmpty) {
-      nowPlaying = await database.getNowPlaying(epgChannelIds.toList());
+    if (out.epgChannelIds.isNotEmpty) {
+      nowPlaying = await database.getNowPlaying(out.epgChannelIds);
     }
 
     if (!mounted) return;
     setState(() {
       _setNowPlaying(nowPlaying);
-      _epgMappings = epgMap;
-      _rawToPrefixedEpg = rawToPrefixed;
-      _epgNameToId = epgNameToId;
-      _epgExactNameToId = epgExactNameToId;
-      _epgCallSignToId = epgCallSignToId;
+      _epgMappings = out.epgMap;
+      _rawToPrefixedEpg = out.rawToPrefixed;
+      _epgNameToId = out.epgNameToId;
+      _epgExactNameToId = out.epgExactNameToId;
+      _epgCallSignToId = out.epgCallSignToId;
     });
 
     // Build edit-distance fuzzy cache in background for unmatched channels
-    _buildFuzzyEpgCache(allChannels, epgExactNameToId);
+    _buildFuzzyEpgCache(allChannels, out.epgExactNameToId);
   }
 
   Future<void> _restoreSession() async {
@@ -6833,3 +6818,153 @@ int _levenshtein(String a, String b, int maxDist) {
 }
 
 int _min3(int a, int b, int c) => a < b ? (a < c ? a : c) : (b < c ? b : c);
+
+// ---------------------------------------------------------------------------
+// Isolate-friendly EPG index builder (must be top-level).
+// Moves the per-channel regex normalization / matching off the main isolate so
+// re-indexing after a refresh doesn't make the UI sluggish on large playlists.
+// ---------------------------------------------------------------------------
+
+class _EpgIndexInput {
+  final List<({String id, String channelId, String displayName})> epgChannels;
+  final List<({String channelId, String epgSourceId, String epgChannelId})>
+  mappings;
+  final List<String> currentSourceIds;
+  final List<({String id, String name, String? tvgId})> channels;
+  final List<String> favChannelIds;
+
+  const _EpgIndexInput({
+    required this.epgChannels,
+    required this.mappings,
+    required this.currentSourceIds,
+    required this.channels,
+    required this.favChannelIds,
+  });
+}
+
+class _EpgIndexOutput {
+  final Map<String, String> epgMap;
+  final Map<String, String> rawToPrefixed;
+  final Map<String, String> epgNameToId;
+  final Map<String, String> epgExactNameToId;
+  final Map<String, String> epgCallSignToId;
+  final List<String> epgChannelIds;
+
+  const _EpgIndexOutput({
+    required this.epgMap,
+    required this.rawToPrefixed,
+    required this.epgNameToId,
+    required this.epgExactNameToId,
+    required this.epgCallSignToId,
+    required this.epgChannelIds,
+  });
+}
+
+/// Builds the EPG lookup indexes and now-playing channel-id scope. Pure CPU
+/// work (regex + map building), safe to run inside a background isolate.
+_EpgIndexOutput _computeEpgIndex(_EpgIndexInput input) {
+  final currentSourceIds = input.currentSourceIds.toSet();
+  final validIds = <String>{};
+  final rawToPrefixed = <String, String>{};
+  final epgNameToId = <String, String>{};
+  final epgExactNameToId = <String, String>{};
+  final epgCallSignToId = <String, String>{};
+
+  final csPrefix = RegExp(r'^([WK][A-Z]{2,3})\.');
+  final csExact = RegExp(r'^[WK][A-Z]{2,3}$');
+
+  for (final ch in input.epgChannels) {
+    validIds.add(ch.id);
+    rawToPrefixed[ch.channelId.toLowerCase()] = ch.id;
+    final exactLower = ch.displayName.toLowerCase().trim();
+    if (exactLower.isNotEmpty) {
+      epgExactNameToId.putIfAbsent(exactLower, () => ch.id);
+    }
+    final normName = _ChannelsScreenState._normalizeForEpgMatch(ch.displayName);
+    if (normName.isNotEmpty) epgNameToId[normName] = ch.id;
+    final rawUpper = ch.channelId.toUpperCase();
+    final csMatch = csPrefix.firstMatch(rawUpper);
+    if (csMatch != null) {
+      epgCallSignToId.putIfAbsent(csMatch.group(1)!, () => ch.id);
+    }
+    final dotParts = ch.channelId.split('.');
+    if (dotParts.length >= 4) {
+      final lastPart = dotParts.last.toUpperCase();
+      if (csExact.hasMatch(lastPart)) {
+        epgCallSignToId.putIfAbsent(lastPart, () => ch.id);
+      }
+    }
+  }
+
+  final epgMap = <String, String>{};
+  for (final m in input.mappings) {
+    final directKey = '${m.epgSourceId}_${m.epgChannelId}';
+    if (currentSourceIds.contains(m.epgSourceId)) {
+      epgMap[m.channelId] = directKey;
+    } else {
+      for (final srcId in currentSourceIds) {
+        final candidate = '${srcId}_${m.epgChannelId}';
+        if (validIds.contains(candidate)) {
+          epgMap[m.channelId] = candidate;
+          break;
+        }
+      }
+    }
+  }
+
+  // Failover name index + EPG scope — only relevant when there are favorites.
+  final favSet = input.favChannelIds.toSet();
+  final epgScopeIds = <String>{...favSet};
+  if (favSet.isNotEmpty) {
+    final normNameIndex = <String, List<String>>{};
+    for (final c in input.channels) {
+      final norm = _ChannelsScreenState._normalizeName(c.name);
+      (normNameIndex[norm] ??= []).add(c.id);
+    }
+    for (final c in input.channels) {
+      if (!favSet.contains(c.id)) continue;
+      final normName = _ChannelsScreenState._normalizeName(c.name);
+      final alts = normNameIndex[normName];
+      if (alts != null) epgScopeIds.addAll(alts);
+    }
+  }
+
+  final epgChannelIds = <String>{};
+  for (final c in input.channels) {
+    if (!epgScopeIds.contains(c.id)) continue;
+    final mapped = epgMap[c.id];
+    if (mapped != null && mapped.isNotEmpty) {
+      epgChannelIds.add(mapped);
+      continue;
+    }
+    if (c.tvgId != null && c.tvgId!.isNotEmpty) {
+      final prefixed = rawToPrefixed[c.tvgId!.toLowerCase()];
+      if (prefixed != null) {
+        epgChannelIds.add(prefixed);
+        continue;
+      }
+    }
+    final normName = _ChannelsScreenState._normalizeForEpgMatch(c.name);
+    if (normName.isNotEmpty) {
+      final byName = epgNameToId[normName];
+      if (byName != null) {
+        epgChannelIds.add(byName);
+        continue;
+      }
+    }
+    final callSign = _ChannelsScreenState._extractCallSign(c.name, c.tvgId);
+    if (callSign != null) {
+      final byCs = epgCallSignToId[callSign];
+      if (byCs != null) epgChannelIds.add(byCs);
+    }
+  }
+
+  return _EpgIndexOutput(
+    epgMap: epgMap,
+    rawToPrefixed: rawToPrefixed,
+    epgNameToId: epgNameToId,
+    epgExactNameToId: epgExactNameToId,
+    epgCallSignToId: epgCallSignToId,
+    epgChannelIds: epgChannelIds.toList(),
+  );
+}
