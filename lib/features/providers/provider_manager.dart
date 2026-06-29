@@ -63,8 +63,8 @@ class ProviderManager {
         url: Value(url),
       ),
     );
-    // Clear stale channels from the previous source before re-importing.
-    await _db.deleteChannelsForProvider(id);
+    // refreshProvider re-imports and prunes channels no longer in the source,
+    // preserving favorites for any channels that remain.
     return refreshProvider(id);
   }
 
@@ -124,6 +124,16 @@ class ProviderManager {
         );
       }).toList(),
     );
+
+    // Prune channels that no longer exist in the refreshed source so the list
+    // matches the playlist exactly (favorites for retained channels are kept).
+    // Guard against an empty parse (e.g. transient fetch issue) wiping the list.
+    if (channels.isNotEmpty) {
+      await _db.deleteStaleChannels(
+        providerId,
+        channels.map((c) => c.id).toSet(),
+      );
+    }
 
     // Resolve missing logos in background
     _resolveChannelLogos(channels).catchError((_) {});

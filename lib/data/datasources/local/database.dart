@@ -147,6 +147,21 @@ class AppDatabase extends _$AppDatabase {
     });
   }
 
+  /// Remove channels for [providerId] whose IDs are not in [keepIds].
+  /// Used after a refresh/re-import so channels that disappeared from the
+  /// source playlist don't linger as stale entries. Favorites and per-channel
+  /// data for retained channels are preserved because they keep the same ID.
+  Future<int> deleteStaleChannels(
+    String providerId,
+    Set<String> keepIds,
+  ) async {
+    return (delete(channels)
+          ..where(
+            (t) => t.providerId.equals(providerId) & t.id.isNotIn(keepIds),
+          ))
+        .go();
+  }
+
   Future<void> updateChannelLogo(String channelId, String logoUrl) =>
       (update(channels)..where((t) => t.id.equals(channelId))).write(
         ChannelsCompanion(tvgLogo: Value(logoUrl)),
