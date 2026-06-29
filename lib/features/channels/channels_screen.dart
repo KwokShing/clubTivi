@@ -197,24 +197,29 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         }
       }
     };
-    // Watch providers table — reload when providers or channels change
+    // Watch providers + channels tables. Instead of re-running the heavy
+    // staged _loadChannels (which races on overlapping refreshes and doubled
+    // the in-memory list, and reset the view back to Favorites), update state
+    // directly from the authoritative DB snapshot. This keeps other lists
+    // untouched and preserves the current selection/group.
     final database = ref.read(databaseProvider);
-    Timer? debounce;
-    void debouncedReload() {
-      debounce?.cancel();
-      debounce = Timer(const Duration(milliseconds: 500), () {
-        if (mounted) _loadChannels();
-      });
-    }
+    Timer? provDebounce;
+    Timer? chanDebounce;
 
-    _providersSub = database
-        .select(database.providers)
-        .watch()
-        .listen((_) => debouncedReload());
-    _channelsSub = database
-        .select(database.channels)
-        .watch()
-        .listen((_) => debouncedReload());
+    _providersSub = database.select(database.providers).watch().listen((
+      providers,
+    ) {
+      provDebounce?.cancel();
+      provDebounce = Timer(const Duration(milliseconds: 300), () {
+        if (mounted) _onProvidersSnapshot(providers);
+      });
+    });
+    _channelsSub = database.select(database.channels).watch().listen((all) {
+      chanDebounce?.cancel();
+      chanDebounce = Timer(const Duration(milliseconds: 300), () {
+        if (mounted) _onChannelsSnapshot(all);
+      });
+    });
     // Refresh now-playing every 60 seconds so the info panel stays current
     _nowPlayingTimer = Timer.periodic(
       const Duration(seconds: 60),
@@ -585,6 +590,70 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         .toList();
     setState(() {
       _allChannels = [..._allChannels, ...newChannels];
+      _applyFilters();
+    });
+  }
+
+  /// Reactively apply a full channels snapshot from the DB watch stream.
+  ///
+  /// This is authoritative: [_allChannels] is replaced wholesale with the
+  /// snapshot rather than appended to, so a refresh that changes one provider
+  /// can never duplicate or double the in-memory list. The current group
+  /// selection and highlighted channel are preserved so refreshing one list
+  /// doesn't disturb the rest of the UI.
+  void _onChannelsSnapshot(List<db.Channel> all) {
+    if (!mounted || !_initialLoadDone) return;
+
+    // Rebuild provider → ordered group names from the snapshot, preserving
+    // M3U order via sortOrder (first appearance wins).
+    final sorted = [...all]
+      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    final pGroups = <String, List<String>>{};
+    final seenGroups = <String, Set<String>>{};
+    for (final c in sorted) {
+      final g = c.groupTitle ?? '';
+      if (g.isEmpty) continue;
+      final seen = seenGroups[c.providerId] ??= <String>{};
+      if (seen.add(g)) (pGroups[c.providerId] ??= []).add(g);
+    }
+    final allGroupNames = <String>{};
+    for (final gl in pGroups.values) {
+      allGroupNames.addAll(gl);
+    }
+
+    // Preserve the currently selected channel across the rebuild.
+    final selectedId =
+        (_selectedIndex >= 0 && _selectedIndex < _filteredChannels.length)
+        ? _filteredChannels[_selectedIndex].id
+        : null;
+
+    setState(() {
+      _allChannels = all;
+      _providerGroups = pGroups;
+      _groups = allGroupNames.toList();
+      // We now hold every provider's channels in memory.
+      _loadedProviders
+        ..clear()
+        ..addAll(_providers.map((p) => p.id));
+      _applyFilters();
+      if (selectedId != null) {
+        final idx = _filteredChannels.indexWhere((c) => c.id == selectedId);
+        if (idx >= 0) _selectedIndex = idx;
+      }
+    });
+
+    // Re-index EPG / now-playing for the updated channel set in background.
+    final database = ref.read(databaseProvider);
+    _loadEpgData(database, _allChannels, _favoritedChannelIds);
+  }
+
+  /// Reactively apply a providers snapshot (add / edit / delete / rename).
+  /// Lightweight: updates the provider list and re-applies filters without
+  /// reloading channels (channel changes arrive via [_onChannelsSnapshot]).
+  void _onProvidersSnapshot(List<db.Provider> providers) {
+    if (!mounted || !_initialLoadDone) return;
+    setState(() {
+      _providers = providers;
       _applyFilters();
     });
   }
