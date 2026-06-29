@@ -187,11 +187,7 @@ class _ProviderCard extends ConsumerWidget {
               onPressed: () async {
                 final manager = ref.read(providerManagerProvider);
                 try {
-                  final count = await manager.refreshProvider(provider.id);
-                  if (!context.mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Loaded $count channels')),
-                  );
+                  await manager.refreshProvider(provider.id);
                 } catch (e) {
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -252,11 +248,7 @@ class _ProviderCard extends ConsumerWidget {
   void _refreshProvider(BuildContext context, WidgetRef ref) async {
     final manager = ref.read(providerManagerProvider);
     try {
-      final count = await manager.refreshProvider(provider.id);
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Loaded $count channels')),
-      );
+      await manager.refreshProvider(provider.id);
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

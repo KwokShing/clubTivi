@@ -86,16 +86,13 @@ class _EditProviderPageState extends ConsumerState<_EditProviderPage> {
     setState(() => _loading = true);
     try {
       final manager = ref.read(providerManagerProvider);
-      final count = await manager.updateM3uProvider(
+      await manager.updateM3uProvider(
         id: widget.provider.id,
         name: _name.text.trim(),
         url: _url.text.trim(),
       );
       if (!mounted) return;
       Navigator.of(context).pop(true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Provider updated — loaded $count channels')),
-      );
     } catch (e) {
       if (!mounted) return;
       showDialog(
