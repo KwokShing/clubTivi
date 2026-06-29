@@ -1,5 +1,12 @@
 import '../../models/channel.dart';
 
+/// Top-level entry point so M3U parsing can run in a background isolate via
+/// `compute`, keeping the UI thread responsive for large playlists.
+/// Takes (content, providerId) and returns the parsed result.
+M3uResult parseM3uInBackground((String, String) args) {
+  return M3uParser().parse(args.$1, providerId: args.$2);
+}
+
 /// Parses M3U and M3U Plus playlist formats.
 ///
 /// Supports:

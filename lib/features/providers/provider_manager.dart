@@ -17,7 +17,6 @@ import 'package:dio/dio.dart';
 /// Manages IPTV providers: adding, refreshing, channel loading.
 class ProviderManager {
   final db.AppDatabase _db;
-  final M3uParser _m3uParser = M3uParser();
 
   ProviderManager(this._db);
 
@@ -179,7 +178,11 @@ class ProviderManager {
       final bytes = await File(source).readAsBytes();
       data = utf8.decode(bytes, allowMalformed: true);
     }
-    final result = _m3uParser.parse(data, providerId: provider.id);
+    // Parse off the main isolate so large playlists don't freeze the UI.
+    final result = await compute(
+      parseM3uInBackground,
+      (data, provider.id),
+    );
 
     // Auto-add EPG source from M3U header if present, then refresh it
     if (result.epgUrl != null && result.epgUrl!.isNotEmpty) {
