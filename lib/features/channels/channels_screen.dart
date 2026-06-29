@@ -107,6 +107,12 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   List<db.Provider> _providers = [];
   // Pre-computed: provider ID → sorted group names
   Map<String, List<String>> _providerGroups = {};
+  // Cheap signature of the channel set's structure (ids/names/groups). Used to
+  // skip the expensive group rebuild + EPG re-index when a watch emission only
+  // changed cosmetic data (e.g. logos resolved in the background).
+  String? _channelStructureSignature;
+  // Debounce timer for the heavy EPG re-index after a structural change.
+  Timer? _epgReindexTimer;
   // Track which providers' channels have been loaded into _allChannels
   final Set<String> _loadedProviders = {};
   // Favorite lists state
@@ -456,6 +462,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _providersSub?.cancel();
     _channelsSub?.cancel();
     _longPressTimer?.cancel();
+    _epgReindexTimer?.cancel();
     _focusNode.dispose();
     super.dispose();
   }
@@ -604,28 +611,53 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   void _onChannelsSnapshot(List<db.Channel> all) {
     if (!mounted || !_initialLoadDone) return;
 
-    // Rebuild provider → ordered group names from the snapshot, preserving
-    // M3U order via sortOrder (first appearance wins).
-    final sorted = [...all]
-      ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-    final pGroups = <String, List<String>>{};
-    final seenGroups = <String, Set<String>>{};
-    for (final c in sorted) {
-      final g = c.groupTitle ?? '';
-      if (g.isEmpty) continue;
-      final seen = seenGroups[c.providerId] ??= <String>{};
-      if (seen.add(g)) (pGroups[c.providerId] ??= []).add(g);
-    }
-    final allGroupNames = <String>{};
-    for (final gl in pGroups.values) {
-      allGroupNames.addAll(gl);
-    }
+    // Cheap O(n) signature over id + name + group. If unchanged, this emission
+    // only touched cosmetic columns (e.g. logos) — skip the heavy group
+    // rebuild and EPG re-index, just refresh the in-memory list so new logos
+    // show. This prevents the logo-resolver's batched writes from re-triggering
+    // expensive recomputation on every batch and freezing the UI.
+    final sig = _channelStructureSignature_(all);
+    final structureChanged = sig != _channelStructureSignature;
+    _channelStructureSignature = sig;
 
     // Preserve the currently selected channel across the rebuild.
     final selectedId =
         (_selectedIndex >= 0 && _selectedIndex < _filteredChannels.length)
         ? _filteredChannels[_selectedIndex].id
         : null;
+
+    if (!structureChanged) {
+      setState(() {
+        _allChannels = all;
+        _applyFilters();
+        if (selectedId != null) {
+          final idx = _filteredChannels.indexWhere((c) => c.id == selectedId);
+          if (idx >= 0) _selectedIndex = idx;
+        }
+      });
+      return;
+    }
+
+    // Structural change: rebuild provider → ordered group names. Order groups
+    // by their first appearance (min sortOrder) without sorting every channel.
+    final minOrder = <String, Map<String, int>>{};
+    for (final c in all) {
+      final g = c.groupTitle ?? '';
+      if (g.isEmpty) continue;
+      final m = minOrder[c.providerId] ??= <String, int>{};
+      final cur = m[g];
+      if (cur == null || c.sortOrder < cur) m[g] = c.sortOrder;
+    }
+    final pGroups = <String, List<String>>{};
+    minOrder.forEach((pid, gm) {
+      final entries = gm.entries.toList()
+        ..sort((a, b) => a.value.compareTo(b.value));
+      pGroups[pid] = [for (final e in entries) e.key];
+    });
+    final allGroupNames = <String>{};
+    for (final gl in pGroups.values) {
+      allGroupNames.addAll(gl);
+    }
 
     setState(() {
       _allChannels = all;
@@ -642,9 +674,27 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       }
     });
 
-    // Re-index EPG / now-playing for the updated channel set in background.
-    final database = ref.read(databaseProvider);
-    _loadEpgData(database, _allChannels, _favoritedChannelIds);
+    // Re-index EPG / now-playing — heavy, so debounce it so a burst of
+    // structural writes only triggers one pass once the list settles.
+    _epgReindexTimer?.cancel();
+    _epgReindexTimer = Timer(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      final database = ref.read(databaseProvider);
+      _loadEpgData(database, _allChannels, _favoritedChannelIds);
+    });
+  }
+
+  /// Cheap structural fingerprint of the channel set (id + name + group).
+  /// Changes only when channels are added/removed/renamed/regrouped, not when
+  /// cosmetic columns like logos are updated.
+  String _channelStructureSignature_(List<db.Channel> all) {
+    var h = all.length;
+    for (final c in all) {
+      h = 0x1fffffff & (h * 31 + c.id.hashCode);
+      h = 0x1fffffff & (h * 31 + c.name.hashCode);
+      h = 0x1fffffff & (h * 31 + (c.groupTitle?.hashCode ?? 0));
+    }
+    return '$h:${all.length}';
   }
 
   /// Reactively apply a providers snapshot (add / edit / delete / rename).
@@ -721,18 +771,24 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       }
     }
 
-    // Build failover name index + EPG scope
-    final normNameIndex = <String, List<String>>{};
-    for (final c in allChannels) {
-      final norm = _normalizeName(c.name);
-      (normNameIndex[norm] ??= []).add(c.id);
-    }
+    // Build failover name index + EPG scope. This only matters for favorited
+    // channels (and their failover alternates), so skip the expensive O(n)
+    // normalization pass entirely when there are no favorites.
     final epgScopeIds = <String>{...favChannelIds};
-    final favChannels = allChannels.where((c) => favChannelIds.contains(c.id));
-    for (final fav in favChannels) {
-      final normName = _normalizeName(fav.name);
-      final alts = normNameIndex[normName];
-      if (alts != null) epgScopeIds.addAll(alts);
+    if (favChannelIds.isNotEmpty) {
+      final normNameIndex = <String, List<String>>{};
+      for (final c in allChannels) {
+        final norm = _normalizeName(c.name);
+        (normNameIndex[norm] ??= []).add(c.id);
+      }
+      final favChannels = allChannels.where(
+        (c) => favChannelIds.contains(c.id),
+      );
+      for (final fav in favChannels) {
+        final normName = _normalizeName(fav.name);
+        final alts = normNameIndex[normName];
+        if (alts != null) epgScopeIds.addAll(alts);
+      }
     }
 
     // Collect EPG channel IDs for now-playing lookup
