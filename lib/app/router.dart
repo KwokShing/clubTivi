@@ -88,6 +88,3 @@ GoRouter createRouter() {
     routes: [...sidebarRoutes, ...standaloneRoutes],
   );
 }
-
-/// Global router instance — initialized lazily.
-late final GoRouter router = createRouter();
