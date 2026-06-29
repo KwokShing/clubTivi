@@ -230,7 +230,78 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // ── Top row ──
+                    // ── Seek bar row (moved above the controls so the thin
+                    // progress bar doesn't visually collide with the iOS home
+                    // indicator / app-switch bar at the very bottom) ──
+                    Container(
+                  color: Colors.black.withValues(alpha: 0.7),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  child: Row(
+                    children: [
+                      Text(
+                        _formatDuration(
+                            _isSeeking
+                                ? Duration(
+                                    milliseconds: _seekValue.round())
+                                : _position),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12),
+                      ),
+                      Expanded(
+                        child: SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            trackHeight: 3,
+                            thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 6),
+                            overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 10),
+                            activeTrackColor: Colors.blue,
+                            inactiveTrackColor: Colors.white24,
+                            thumbColor: Colors.blue,
+                          ),
+                          child: Slider(
+                            value: _isSeeking
+                                ? _seekValue
+                                : _position.inMilliseconds
+                                    .toDouble()
+                                    .clamp(
+                                        0,
+                                        _duration.inMilliseconds
+                                            .toDouble()
+                                            .clamp(1, double.infinity)),
+                            min: 0,
+                            max: _duration.inMilliseconds
+                                .toDouble()
+                                .clamp(1, double.infinity),
+                            onChangeStart: (v) {
+                              setState(() {
+                                _isSeeking = true;
+                                _seekValue = v;
+                              });
+                            },
+                            onChanged: (v) {
+                              setState(() => _seekValue = v);
+                              _scheduleHide();
+                            },
+                            onChangeEnd: (v) {
+                              ref.read(playerServiceProvider).player.seek(
+                                  Duration(milliseconds: v.round()));
+                              setState(() => _isSeeking = false);
+                            },
+                          ),
+                        ),
+                      ),
+                      Text(
+                        _formatDuration(_duration),
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+
+                    // ── Controls row ──
                     Container(
                   color: Colors.black.withValues(alpha: 0.7),
                   padding:
@@ -437,74 +508,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
                   ),
                 ),
 
-                // ── Bottom row: seek bar ──
-                Container(
-                  color: Colors.black.withValues(alpha: 0.7),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                  child: Row(
-                    children: [
-                      Text(
-                        _formatDuration(
-                            _isSeeking
-                                ? Duration(
-                                    milliseconds: _seekValue.round())
-                                : _position),
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 12),
-                      ),
-                      Expanded(
-                        child: SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            trackHeight: 3,
-                            thumbShape: const RoundSliderThumbShape(
-                                enabledThumbRadius: 6),
-                            overlayShape: const RoundSliderOverlayShape(
-                                overlayRadius: 10),
-                            activeTrackColor: Colors.blue,
-                            inactiveTrackColor: Colors.white24,
-                            thumbColor: Colors.blue,
-                          ),
-                          child: Slider(
-                            value: _isSeeking
-                                ? _seekValue
-                                : _position.inMilliseconds
-                                    .toDouble()
-                                    .clamp(
-                                        0,
-                                        _duration.inMilliseconds
-                                            .toDouble()
-                                            .clamp(1, double.infinity)),
-                            min: 0,
-                            max: _duration.inMilliseconds
-                                .toDouble()
-                                .clamp(1, double.infinity),
-                            onChangeStart: (v) {
-                              setState(() {
-                                _isSeeking = true;
-                                _seekValue = v;
-                              });
-                            },
-                            onChanged: (v) {
-                              setState(() => _seekValue = v);
-                              _scheduleHide();
-                            },
-                            onChangeEnd: (v) {
-                              ref.read(playerServiceProvider).player.seek(
-                                  Duration(milliseconds: v.round()));
-                              setState(() => _isSeeking = false);
-                            },
-                          ),
-                        ),
-                      ),
-                      Text(
-                        _formatDuration(_duration),
-                        style: const TextStyle(
-                            color: Colors.white70, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ),
                   ],
                 ),
               ),
