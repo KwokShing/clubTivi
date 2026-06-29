@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../data/datasources/local/database.dart' as db;
 import 'add_provider_dialog.dart';
+import 'edit_provider_dialog.dart';
 import 'provider_manager.dart';
 
 /// Watches all providers as a stream for reactive UI updates.
@@ -199,6 +200,12 @@ class _ProviderCard extends ConsumerWidget {
                 }
               },
             ),
+            if (!isXtream)
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 20),
+                tooltip: 'Edit',
+                onPressed: () => showEditProviderDialog(context, provider),
+              ),
             IconButton(
               icon: const Icon(Icons.delete_outline_rounded,
                   size: 20, color: Colors.redAccent),

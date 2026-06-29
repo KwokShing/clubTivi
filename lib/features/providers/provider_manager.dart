@@ -47,6 +47,27 @@ class ProviderManager {
     await refreshProvider(id);
   }
 
+  /// Update an existing M3U provider's name and/or source (URL or file path),
+  /// then re-import its channels. Old channels are cleared first so a changed
+  /// source doesn't leave stale entries behind. Returns the channel count.
+  Future<int> updateM3uProvider({
+    required String id,
+    required String name,
+    required String url,
+  }) async {
+    await _db.upsertProvider(
+      db.ProvidersCompanion(
+        id: Value(id),
+        name: Value(name),
+        type: const Value('m3u'),
+        url: Value(url),
+      ),
+    );
+    // Clear stale channels from the previous source before re-importing.
+    await _db.deleteChannelsForProvider(id);
+    return refreshProvider(id);
+  }
+
   /// Add an Xtream Codes provider.
   Future<void> addXtreamProvider({
     required String id,

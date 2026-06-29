@@ -90,6 +90,11 @@ class AppDatabase extends _$AppDatabase {
     await (delete(providers)..where((t) => t.id.equals(id))).go();
   }
 
+  /// Delete all channels belonging to a provider (without removing the
+  /// provider itself). Used when re-importing from a changed source.
+  Future<void> deleteChannelsForProvider(String providerId) =>
+      (delete(channels)..where((t) => t.providerId.equals(providerId))).go();
+
   // --- Channel queries ---
 
   Future<List<Channel>> getChannelsForProvider(String providerId) =>
