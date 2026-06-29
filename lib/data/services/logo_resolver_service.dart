@@ -1,6 +1,25 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// Top-level entry point so the (CPU-heavy) logo matching can run in a
+/// background isolate via `compute`. Takes the pre-fetched index plus the
+/// channels to match and returns channelId → logoUrl. Matching is pure string
+/// work, so it never blocks the UI thread even for large playlists.
+Map<String, String> resolveLogosBatchInBackground(
+  (Map<String, String>, List<({String id, String name})>) args,
+) {
+  final index = args.$1;
+  final channels = args.$2;
+  final out = <String, String>{};
+  if (index.isEmpty) return out;
+  for (final c in channels) {
+    final url = LogoResolverService.matchLogo(c.name, index);
+    if (url != null) out[c.id] = url;
+  }
+  return out;
+}
 
 /// Resolves missing channel logos using tv-logo/tv-logos GitHub repository
 /// and EPG channel icons as fallback sources.
@@ -125,6 +144,12 @@ class LogoResolverService {
   /// Returns a URL string or null if no match found.
   static Future<String?> resolveLogoUrl(String channelName) async {
     final index = await _getIndex();
+    return matchLogo(channelName, index);
+  }
+
+  /// Synchronous logo matching against a pre-built [index]. Pure string work
+  /// (no I/O), so it is safe to run inside a background isolate.
+  static String? matchLogo(String channelName, Map<String, String> index) {
     if (index.isEmpty) return null;
 
     final normalized = _normalizeChannelName(channelName);
@@ -218,27 +243,27 @@ class LogoResolverService {
 
   /// Resolve logos for a batch of channels.
   /// Returns a map of channelId → logoUrl for channels that got resolved.
+  /// The actual matching runs in a background isolate so large playlists
+  /// don't block the UI thread.
   static Future<Map<String, String>> resolveLogosForChannels(
     List<({String id, String name, String? tvgLogo})> channels,
   ) async {
-    final results = <String, String>{};
     final needsResolution = channels
         .where((c) => c.tvgLogo == null || c.tvgLogo!.isEmpty)
         .toList();
 
-    if (needsResolution.isEmpty) return results;
+    if (needsResolution.isEmpty) return {};
 
-    // Pre-load the index
-    await _getIndex();
+    // Fetch/load the index on the main isolate (network + prefs), then hand the
+    // pure string-matching work off to a background isolate.
+    final index = await _getIndex();
+    if (index.isEmpty) return {};
 
-    for (final channel in needsResolution) {
-      final url = await resolveLogoUrl(channel.name);
-      if (url != null) {
-        results[channel.id] = url;
-      }
-    }
-
-    return results;
+    final args = (
+      index,
+      [for (final c in needsResolution) (id: c.id, name: c.name)],
+    );
+    return compute(resolveLogosBatchInBackground, args);
   }
 
   /// Clear the cached index (useful for manual refresh).

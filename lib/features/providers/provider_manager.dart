@@ -303,7 +303,7 @@ class ProviderManager {
           epgIconMap[ec.channelId.toLowerCase()] = ec.iconUrl!;
         }
       }
-      for (final ch in needsLogo.toList()) {
+      for (final ch in needsLogo) {
         final stripped = ch.name
             .toLowerCase()
             .replaceAll(RegExp(r'^[a-z]{2}[-]?[a-z]?\|\s*'), '')
@@ -313,9 +313,10 @@ class ProviderManager {
         final icon = epgIconMap[ch.name.toLowerCase()] ?? epgIconMap[stripped];
         if (icon != null) {
           resolved[ch.id] = icon;
-          needsLogo.removeWhere((c) => c.id == ch.id);
         }
       }
+      // Drop EPG-resolved channels in one pass (avoids O(n^2) removeWhere).
+      needsLogo.removeWhere((c) => resolved.containsKey(c.id));
       debugPrint('[Logo] EPG icons resolved ${resolved.length} channels');
     } catch (e) {
       debugPrint('[Logo] EPG icon resolution failed: $e');
