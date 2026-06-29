@@ -14,11 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    name: Compute build timestamp
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.ts.outputs.ts }}
+    steps:
+      - id: ts
+        run: echo "ts=$(date -u +'%Y%m%d%H%M%S')" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     uses: ./.github/workflows/build.yml
     with:
-      release_tag: dev-${{ github.sha }}
-      release_name: "🚀 Dev — ${{ github.sha }}"
+      release_tag: dev-${{ needs.prepare.outputs.ts }}
+      release_name: "🚀 Dev — ${{ needs.prepare.outputs.ts }}"
       prerelease: true
 
   cleanup:
