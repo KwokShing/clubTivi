@@ -2310,7 +2310,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
           Video(
             controller: playerService.videoController,
             controls: NoVideoControls,
-            fit: BoxFit.fill,
+            fit: BoxFit.contain,
           ),
           // Centered buffering indicator — shown while (re)buffering, hidden
           // the moment playback resumes (also shown in the inline/windowed
