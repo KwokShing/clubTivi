@@ -47,18 +47,34 @@ class _StreamInfoBadgesState extends State<StreamInfoBadges> {
       } else {
         _resolution = null;
       }
-      if (aspect != null) {
-        final a = double.tryParse(aspect);
-        if (a != null && a > 0) {
-          if ((a - 16 / 9).abs() < 0.05) {
-            _aspect = '16:9';
-          } else if ((a - 4 / 3).abs() < 0.05) {
-            _aspect = '4:3';
-          } else if ((a - 21 / 9).abs() < 0.1) {
-            _aspect = '21:9';
-          } else {
-            _aspect = a.toStringAsFixed(2);
-          }
+      final wi = int.tryParse(w ?? '') ?? 0;
+      final hi = int.tryParse(h ?? '') ?? 0;
+      final a = aspect != null
+          ? double.tryParse(aspect)
+          : (wi > 0 && hi > 0 ? wi / hi : null);
+      if (a != null && a > 0) {
+        if ((a - 16 / 9).abs() < 0.05) {
+          _aspect = '16:9';
+        } else if ((a - 4 / 3).abs() < 0.05) {
+          _aspect = '4:3';
+        } else if ((a - 21 / 9).abs() < 0.1) {
+          _aspect = '21:9';
+        } else if ((a - 9 / 16).abs() < 0.05) {
+          _aspect = '9:16';
+        } else if ((a - 3 / 4).abs() < 0.05) {
+          _aspect = '3:4';
+        } else if (wi > 0 && hi > 0) {
+          // Reduce the actual pixel dimensions to a clean integer ratio
+          // (e.g. 1080x1920 -> 9:16). Fall back to a decimal only when the
+          // reduced ratio would be unwieldy.
+          final g = _gcd(wi, hi);
+          final rw = wi ~/ g;
+          final rh = hi ~/ g;
+          _aspect = (rw <= 50 && rh <= 50)
+              ? '$rw:$rh'
+              : a.toStringAsFixed(2);
+        } else {
+          _aspect = a.toStringAsFixed(2);
         }
       } else {
         _aspect = null;
@@ -85,6 +101,15 @@ class _StreamInfoBadgesState extends State<StreamInfoBadges> {
         _videoCodec = null;
       }
     });
+  }
+
+  static int _gcd(int a, int b) {
+    while (b != 0) {
+      final t = b;
+      b = a % b;
+      a = t;
+    }
+    return a == 0 ? 1 : a;
   }
 
   @override
