@@ -267,6 +267,16 @@ class PlayerService {
     _bufferManager.stop();
     _failoverCheckTimer?.cancel();
     await player.stop();
+    // Clear current-channel tracking so re-selecting the same channel after a
+    // stop will (re)load it instead of being skipped as "already playing".
+    _currentUrl = null;
+    _currentChannelId = null;
+    _currentEpgChannelId = null;
+    _currentTvgId = null;
+    _currentChannelName = null;
+    _currentVanityName = null;
+    _currentOriginalName = null;
+    _failoverGroupUrls = null;
   }
 
   /// Pause playback.
