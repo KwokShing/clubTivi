@@ -83,6 +83,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   bool _showVolumeOverlay = false;
   Timer? _volumeOverlayTimer;
 
+  // Inline preview overlay (info + play bar) shown on tapping the video window
+  bool _showPreviewControls = false;
+  Timer? _previewControlsTimer;
+
   // Last channel for back/forth toggle (not a full history stack)
   int _previousIndex = -1;
 
@@ -470,6 +474,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _searchDebounce?.cancel();
     _nowPlayingTimer?.cancel();
     _volumeOverlayTimer?.cancel();
+    _previewControlsTimer?.cancel();
     _topBarTimer?.cancel();
     _providersSub?.cancel();
     _channelsSub?.cancel();
@@ -1534,6 +1539,22 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     });
   }
 
+  /// Toggle the inline preview overlay (program info + play bar). Tapping the
+  /// windowed player reveals it; it auto-hides after 3s of inactivity.
+  void _togglePreviewControls() {
+    setState(() => _showPreviewControls = !_showPreviewControls);
+    if (_showPreviewControls) _scheduleHidePreviewControls();
+  }
+
+  /// (Re)start the 3-second auto-hide timer for the inline preview overlay.
+  void _scheduleHidePreviewControls() {
+    _previewControlsTimer?.cancel();
+    _previewControlsTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _showPreviewControls = false);
+    });
+  }
+
+
   // ---------------------------------------------------------------------------
   // Build
   // ---------------------------------------------------------------------------
@@ -2303,6 +2324,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     }
 
     return GestureDetector(
+      onTap: _togglePreviewControls,
       onDoubleTap: () => _goFullscreen(_previewChannel!),
       child: Stack(
         fit: StackFit.expand,
@@ -2348,6 +2370,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
               },
             ),
           ),
+          // Tap-to-reveal info + play bar overlay (auto-hides after 3s)
+          _buildPreviewOverlay(playerService),
           if (_showVolumeOverlay)
             Positioned(
               top: 8,
@@ -2383,43 +2407,213 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                 ),
               ),
             ),
-          // Fullscreen & stop buttons — bottom right of video
-          Positioned(
-            bottom: 6,
-            right: 6,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
+        ],
+      ),
+    );
+  }
+
+  /// Tap-to-reveal overlay for the inline (windowed) preview player.
+  ///
+  /// Shows the most useful bits without crowding the small window: the channel
+  /// name and current programme along the top, and a slim play bar along the
+  /// bottom (play/pause, mute and an EPG-based progress indicator). Hidden by
+  /// default; revealed on tap and auto-hidden after 3s of inactivity.
+  Widget _buildPreviewOverlay(dynamic playerService) {
+    final channel = _previewChannel;
+    if (channel == null) return const SizedBox.shrink();
+
+    final programme = _getEpgProgramme(channel);
+
+    return Positioned.fill(
+      child: IgnorePointer(
+        ignoring: !_showPreviewControls,
+        child: AnimatedOpacity(
+          opacity: _showPreviewControls ? 1.0 : 0.0,
+          duration: const Duration(milliseconds: 200),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _showPreviewControls = false),
+            child: Stack(
+              fit: StackFit.expand,
               children: [
-                SizedBox(
-                  height: 28,
-                  width: 28,
-                  child: IconButton(
-                    onPressed: () {
-                      ref.read(playerServiceProvider).stop();
-                      setState(() => _previewChannel = null);
-                    },
-                    icon: const Icon(Icons.stop_rounded, size: 18),
-                    padding: EdgeInsets.zero,
-                    color: Colors.white70,
-                    tooltip: 'Stop',
+                // ── Top: channel name + now playing ──
+                Align(
+                  alignment: Alignment.topCenter,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(10, 8, 10, 14),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.black87, Colors.transparent],
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _channelDisplayName(channel),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            _PreviewInfoBadges(playerService: playerService),
+                          ],
+                        ),
+                        if (programme != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.play_circle_outline,
+                                  size: 12,
+                                  color: Colors.cyanAccent,
+                                ),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    programme.title,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 11,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(width: 4),
-                SizedBox(
-                  height: 28,
-                  width: 28,
-                  child: IconButton(
-                    onPressed: () => _goFullscreen(_previewChannel!),
-                    icon: const Icon(Icons.fullscreen_rounded, size: 18),
-                    padding: EdgeInsets.zero,
-                    color: Colors.white70,
-                    tooltip: 'Fullscreen',
+                // ── Bottom: play bar ──
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(8, 14, 8, 8),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.bottomCenter,
+                        end: Alignment.topCenter,
+                        colors: [Colors.black87, Colors.transparent],
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        // Play / pause
+                        StreamBuilder<bool>(
+                          stream: playerService.player.stream.playing,
+                          initialData: playerService.player.state.playing,
+                          builder: (context, snapshot) {
+                            final playing = snapshot.data ?? false;
+                            return _previewIconBtn(
+                              playing ? Icons.pause : Icons.play_arrow,
+                              onTap: () {
+                                playing
+                                    ? playerService.pause()
+                                    : playerService.resume();
+                                _scheduleHidePreviewControls();
+                              },
+                            );
+                          },
+                        ),
+                        // Mute toggle
+                        _previewIconBtn(
+                          _volume == 0
+                              ? Icons.volume_off
+                              : _volume < 50
+                              ? Icons.volume_down
+                              : Icons.volume_up,
+                          onTap: () {
+                            final newVol = _volume > 0 ? 0.0 : 100.0;
+                            setState(() => _volume = newVol);
+                            playerService.setVolume(newVol);
+                            _scheduleHidePreviewControls();
+                          },
+                        ),
+                        // Volume slider
+                        SizedBox(
+                          width: 90,
+                          height: 24,
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 2,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 5,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 10,
+                              ),
+                              activeTrackColor: Colors.white,
+                              inactiveTrackColor: Colors.white30,
+                              thumbColor: Colors.white,
+                            ),
+                            child: Slider(
+                              value: _volume,
+                              min: 0,
+                              max: 100,
+                              onChanged: (v) {
+                                setState(() => _volume = v);
+                                playerService.setVolume(v);
+                                _scheduleHidePreviewControls();
+                              },
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        // Stop playback
+                        _previewIconBtn(
+                          Icons.stop_rounded,
+                          onTap: () {
+                            ref.read(playerServiceProvider).stop();
+                            _previewControlsTimer?.cancel();
+                            setState(() {
+                              _previewChannel = null;
+                              _showPreviewControls = false;
+                            });
+                          },
+                        ),
+                        // Fullscreen
+                        _previewIconBtn(
+                          Icons.fullscreen_rounded,
+                          onTap: () => _goFullscreen(channel),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
             ),
           ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  /// Compact icon button used inside the inline preview overlay play bar.
+  Widget _previewIconBtn(IconData icon, {required VoidCallback onTap}) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(6),
+        child: Icon(icon, color: Colors.white, size: 20),
       ),
     );
   }
@@ -6746,7 +6940,6 @@ class _EpgCandidate {
 class _StreamInfoBadges extends StreamInfoBadges {
   const _StreamInfoBadges({required super.playerService});
 }
-
 // ---------------------------------------------------------------------------
 // Isolate-friendly fuzzy EPG matching helpers (must be top-level)
 // ---------------------------------------------------------------------------
@@ -6967,4 +7160,99 @@ _EpgIndexOutput _computeEpgIndex(_EpgIndexInput input) {
     epgCallSignToId: epgCallSignToId,
     epgChannelIds: epgChannelIds.toList(),
   );
+}
+
+/// Compact, periodically-refreshing technical badges (resolution, fps, codec,
+/// audio channels) used in the inline preview overlay's top bar.
+class _PreviewInfoBadges extends StatefulWidget {
+  final dynamic playerService;
+  const _PreviewInfoBadges({required this.playerService});
+
+  @override
+  State<_PreviewInfoBadges> createState() => _PreviewInfoBadgesState();
+}
+
+class _PreviewInfoBadgesState extends State<_PreviewInfoBadges> {
+  Timer? _timer;
+  String? _resolution;
+  String? _fps;
+  String? _codec;
+  String? _audio;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
+  }
+
+  Future<void> _refresh() async {
+    final ps = widget.playerService;
+    final results = await Future.wait<String?>([
+      ps.getMpvProperty('video-params/h') as Future<String?>,
+      ps.getMpvProperty('estimated-vf-fps') as Future<String?>,
+      ps.getMpvProperty('video-codec') as Future<String?>,
+      ps.getMpvProperty('audio-params/channel-count') as Future<String?>,
+    ]);
+    if (!mounted) return;
+    setState(() {
+      final h = int.tryParse(results[0] ?? '') ?? 0;
+      _resolution = h >= 2160 ? '4K' : (h > 0 ? '${h}p' : null);
+      final fps = double.tryParse(results[1] ?? '');
+      _fps = fps != null ? '${fps.toStringAsFixed(0)} fps' : null;
+      final codec = results[2] ?? '';
+      _codec = codec.isNotEmpty ? codec.split(' ').first.toUpperCase() : null;
+      final aCh = int.tryParse(results[3] ?? '') ?? 0;
+      _audio = aCh == 2
+          ? '2.0'
+          : aCh == 6
+          ? '5.1'
+          : aCh == 8
+          ? '7.1'
+          : aCh == 1
+          ? 'Mono'
+          : (aCh > 0 ? '${aCh}ch' : null);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final badges = <String>[
+      ?_resolution,
+      ?_fps,
+      ?_codec,
+      ?_audio,
+    ];
+    if (badges.isEmpty) return const SizedBox.shrink();
+    return Wrap(
+      spacing: 4,
+      runSpacing: 4,
+      children: badges
+          .map(
+            (b) => Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: Colors.white24, width: 0.5),
+              ),
+              child: Text(
+                b,
+                style: const TextStyle(
+                  fontSize: 9,
+                  color: Colors.white70,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
 }
