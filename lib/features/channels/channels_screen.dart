@@ -3195,7 +3195,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                         child: Text(
                           label,
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 12,
                             fontWeight: FontWeight.w600,
                             color: isSelected ? Colors.white : Colors.white54,
                             letterSpacing: 0.5,
@@ -3466,7 +3466,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                       child: Text(
                         label,
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 13,
                           color: isSelected ? Colors.white : Colors.white60,
                           fontWeight: isSelected
                               ? FontWeight.w600
@@ -3877,7 +3877,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                               ? Colors.white
                                               : Colors.white70,
                                           fontWeight: FontWeight.bold,
-                                          fontSize: 13,
+                                          fontSize: 14,
                                         ),
                                         overflow: TextOverflow.ellipsis,
                                       ),
@@ -4358,7 +4358,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                 color: isPlaying
                                     ? Colors.white
                                     : Colors.white54,
-                                fontSize: 10,
+                                fontSize: 11,
                                 fontWeight: isPlaying
                                     ? FontWeight.bold
                                     : FontWeight.normal,
@@ -4977,7 +4977,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                       color: isPlaying
                                           ? Colors.white
                                           : Colors.white60,
-                                      fontSize: 12,
+                                      fontSize: 13,
                                       fontWeight: isPlaying
                                           ? FontWeight.bold
                                           : FontWeight.normal,
