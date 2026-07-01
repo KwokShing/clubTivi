@@ -99,11 +99,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   final _firstChannelFocusNode = FocusNode(debugLabel: 'channel-first');
   String _sidebarSearchQuery = '';
 
-  // Top bar auto-hide
-  double _topBarOpacity = 1.0;
-  Timer? _topBarTimer;
-  bool _mouseInTopBar = false;
-
   StreamSubscription<List<db.Provider>>? _providersSub;
   StreamSubscription<List<db.Channel>>? _channelsSub;
 
@@ -183,7 +178,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _guideScrollController = ScrollController();
     _loadChannels();
     _ensureEpgSources();
-    _startTopBarFade();
     _loadSearchHistory();
     // Resolve missing logos on startup (in background)
     ref
@@ -434,19 +428,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _searchHistory = prefs.getStringList(_kSearchHistory) ?? [];
   }
 
-  void _startTopBarFade() {
-    _topBarTimer?.cancel();
-    if (_mouseInTopBar || Platform.isAndroid) return;
-    _topBarTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && !_mouseInTopBar) setState(() => _topBarOpacity = 0.0);
-    });
-  }
-
-  void _showTopBar() {
-    setState(() => _topBarOpacity = 1.0);
-    _startTopBarFade();
-  }
-
   /// Add default EPG sources on first run and kick off a background refresh.
   Future<void> _ensureEpgSources() async {
     final epgService = ref.read(epgRefreshServiceProvider);
@@ -475,7 +456,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _nowPlayingTimer?.cancel();
     _volumeOverlayTimer?.cancel();
     _previewControlsTimer?.cancel();
-    _topBarTimer?.cancel();
     _providersSub?.cancel();
     _channelsSub?.cancel();
     _longPressTimer?.cancel();
@@ -1132,7 +1112,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         'currentIndex': _selectedIndex >= 0 ? _selectedIndex : 0,
       },
     );
-    if (mounted) _showTopBar();
   }
 
   // ---------------------------------------------------------------------------
@@ -1636,24 +1615,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
             body: SafeArea(
               child: Column(
                 children: [
-                  if (!Platform
-                      .isAndroid) // TV: no top bar, use sidebar for nav
-                    MouseRegion(
-                      onEnter: (_) {
-                        _mouseInTopBar = true;
-                        _topBarTimer?.cancel();
-                        setState(() => _topBarOpacity = 1.0);
-                      },
-                      onExit: (_) {
-                        _mouseInTopBar = false;
-                        _startTopBarFade();
-                      },
-                      child: AnimatedOpacity(
-                        opacity: _topBarOpacity,
-                        duration: const Duration(milliseconds: 600),
-                        child: _buildTopBar(context),
-                      ),
-                    ),
                   // Preview row at full width (player can extend left)
                   _buildPreviewRow(),
                   // Sidebar only next to the guide/channel list below
@@ -2669,89 +2630,120 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         node: _sidebarFocusNode,
         child: Column(
           children: [
-            // Toggle button
-            InkWell(
-              onTap: () => setState(() => _sidebarExpanded = !_sidebarExpanded),
-              child: Container(
-                height: 36,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                alignment: _sidebarExpanded
-                    ? Alignment.centerRight
-                    : Alignment.center,
-                child: Icon(
-                  _sidebarExpanded
-                      ? Icons.chevron_left_rounded
-                      : Icons.chevron_right_rounded,
-                  color: Colors.white38,
-                  size: 20,
-                ),
-              ),
-            ),
-            if (_sidebarExpanded) ...[
-              // Search field — only on iOS (Android TV uses D-pad nav, desktop uses top bar)
-              if (Platform.isIOS) ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
+            if (!_sidebarExpanded)
+              // Collapsed: expand button only
+              InkWell(
+                onTap: () => setState(() => _sidebarExpanded = true),
+                child: Container(
+                  height: 36,
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.white38,
+                    size: 20,
                   ),
-                  child: SizedBox(
-                    height: 30,
-                    child: TextFormField(
-                      controller: _sidebarSearchController,
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                      decoration: InputDecoration(
-                        hintText: 'Search channels…',
-                        hintStyle: const TextStyle(
-                          color: Colors.white24,
-                          fontSize: 12,
-                        ),
-                        prefixIcon: const Icon(
-                          Icons.search_rounded,
-                          size: 14,
-                          color: Colors.white24,
-                        ),
-                        prefixIconConstraints: const BoxConstraints(
-                          minWidth: 30,
-                        ),
-                        suffixIcon: _sidebarSearchQuery.isNotEmpty
-                            ? GestureDetector(
-                                onTap: () {
-                                  _sidebarSearchController.clear();
-                                  setState(() => _sidebarSearchQuery = '');
-                                },
-                                child: const Icon(
-                                  Icons.close_rounded,
-                                  size: 14,
-                                  color: Colors.white24,
-                                ),
-                              )
-                            : null,
-                        suffixIconConstraints: const BoxConstraints(
-                          minWidth: 30,
-                        ),
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.06),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(6),
-                          borderSide: BorderSide.none,
+                ),
+              )
+            else if (!Platform.isAndroid) ...[
+              // Expanded (desktop/mobile): search field + collapse toggle
+              // share one row so the toggle doesn't take a dedicated row.
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 4,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 30,
+                        child: TextFormField(
+                          controller: _sidebarSearchController,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                          decoration: InputDecoration(
+                            hintText: 'Search channels…',
+                            hintStyle: const TextStyle(
+                              color: Colors.white24,
+                              fontSize: 12,
+                            ),
+                            prefixIcon: const Icon(
+                              Icons.search_rounded,
+                              size: 14,
+                              color: Colors.white24,
+                            ),
+                            prefixIconConstraints: const BoxConstraints(
+                              minWidth: 30,
+                            ),
+                            suffixIcon: _sidebarSearchQuery.isNotEmpty
+                                ? GestureDetector(
+                                    onTap: () {
+                                      _sidebarSearchController.clear();
+                                      setState(() => _sidebarSearchQuery = '');
+                                    },
+                                    child: const Icon(
+                                      Icons.close_rounded,
+                                      size: 14,
+                                      color: Colors.white24,
+                                    ),
+                                  )
+                                : null,
+                            suffixIconConstraints: const BoxConstraints(
+                              minWidth: 30,
+                            ),
+                            filled: true,
+                            fillColor: Colors.white.withValues(alpha: 0.06),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(6),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                          onChanged: (v) {
+                            setState(() {
+                              _sidebarSearchQuery = v.toLowerCase();
+                              _applyFilters();
+                            });
+                          },
                         ),
                       ),
-                      onChanged: (v) {
-                        setState(() {
-                          _sidebarSearchQuery = v.toLowerCase();
-                          _applyFilters();
-                        });
-                      },
                     ),
+                    const SizedBox(width: 4),
+                    InkWell(
+                      onTap: () => setState(() => _sidebarExpanded = false),
+                      borderRadius: BorderRadius.circular(6),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(
+                          Icons.chevron_left_rounded,
+                          color: Colors.white38,
+                          size: 20,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1, color: Colors.white10),
+            ] else
+              // Expanded (Android TV): collapse toggle only, no search field.
+              InkWell(
+                onTap: () => setState(() => _sidebarExpanded = false),
+                child: Container(
+                  height: 36,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  alignment: Alignment.centerRight,
+                  child: const Icon(
+                    Icons.chevron_left_rounded,
+                    color: Colors.white38,
+                    size: 20,
                   ),
                 ),
-                const Divider(height: 1, color: Colors.white10),
-              ],
-            ],
+              ),
             // Tree content
             Expanded(
               child: _sidebarExpanded
