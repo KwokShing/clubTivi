@@ -3825,8 +3825,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           ClipRRect(
                             borderRadius: BorderRadius.circular(6),
                             child: SizedBox(
-                              width: 52,
-                              height: 36,
+                              width: 48,
+                              height: 48,
                               child:
                                   channel.tvgLogo != null &&
                                       channel.tvgLogo!.isNotEmpty
@@ -4130,7 +4130,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                       height: 28,
                                       fit: BoxFit.contain,
                                       cacheWidth: 128,
-                                      cacheHeight: 96,
                                       errorBuilder: (_, __, ___) => Container(
                                         width: 44,
                                         height: 28,
@@ -4328,7 +4327,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                       ch.tvgLogo!,
                                       fit: BoxFit.contain,
                                       cacheWidth: 120,
-                                      cacheHeight: 96,
                                       errorBuilder: (_, __, ___) => const Icon(
                                         Icons.tv,
                                         size: 12,
@@ -4756,8 +4754,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                       ClipRRect(
                         borderRadius: BorderRadius.circular(6),
                         child: SizedBox(
-                          width: 52,
-                          height: 36,
+                          width: 48,
+                          height: 48,
                           child:
                               primary?.tvgLogo != null &&
                                   primary!.tvgLogo!.isNotEmpty
@@ -6420,7 +6418,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                                       height: 28,
                                                       fit: BoxFit.contain,
                                                       cacheWidth: 128,
-                                                      cacheHeight: 96,
                                                       errorBuilder:
                                                           (
                                                             _,

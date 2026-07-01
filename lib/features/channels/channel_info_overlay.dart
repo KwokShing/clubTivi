@@ -222,7 +222,6 @@ class _ChannelInfoOverlayState extends State<ChannelInfoOverlay>
                             width: 44,
                             height: 28,
                             cacheWidth: 128,
-                            cacheHeight: 96,
                             fit: BoxFit.contain,
                             errorBuilder: (c, e, s) =>
                                 const SizedBox.shrink(),

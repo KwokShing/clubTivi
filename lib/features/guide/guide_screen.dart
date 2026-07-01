@@ -427,7 +427,7 @@ class _ChannelGuideRowState extends State<_ChannelGuideRow> {
                       Padding(
                         padding: const EdgeInsets.only(right: 6),
                         child: Image.network(widget.channelLogo!, width: 24, height: 24,
-                          cacheWidth: 96, cacheHeight: 96,
+                          cacheWidth: 96, fit: BoxFit.contain,
                           errorBuilder: (_, __, ___) => const Icon(Icons.tv, size: 18, color: Colors.white24)),
                       ),
                     Expanded(

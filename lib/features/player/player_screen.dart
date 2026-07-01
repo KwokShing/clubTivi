@@ -718,7 +718,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                 width: 24,
                                 height: 24,
                                 cacheWidth: 96,
-                                cacheHeight: 96,
+                                fit: BoxFit.contain,
                                 errorBuilder: (c, e, s) => const SizedBox(),
                               ),
                             ),
@@ -982,7 +982,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                           width: 28,
                                           height: 28,
                                           cacheWidth: 96,
-                                          cacheHeight: 96,
+                                          fit: BoxFit.contain,
                                           errorBuilder: (_, __, ___) =>
                                               const Icon(
                                                 Icons.tv,
