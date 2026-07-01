@@ -2659,7 +2659,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   }
 
   Widget _buildSidebar() {
-    final width = _sidebarExpanded ? 220.0 : 44.0;
+    final width = _sidebarExpanded ? 188.0 : 44.0;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       width: width,
@@ -2700,13 +2700,13 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           controller: _sidebarSearchController,
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 12,
+                            fontSize: 11,
                           ),
                           decoration: InputDecoration(
-                            hintText: 'Search channels…',
+                            hintText: 'Search channel',
                             hintStyle: const TextStyle(
                               color: Colors.white24,
-                              fontSize: 12,
+                              fontSize: 11,
                             ),
                             prefixIcon: const Icon(
                               Icons.search_rounded,
@@ -2800,20 +2800,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                 context.push('/settings');
               }),
             ],
-            // Version watermark
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-              child: Text(
-                _sidebarExpanded ? 'clubTivi v0.4.0' : 'v0.4.0',
-                style: const TextStyle(
-                  fontSize: 10,
-                  color: Colors.white24,
-                  letterSpacing: 0.5,
-                ),
-                textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
           ],
         ),
       ),
