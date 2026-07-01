@@ -3833,15 +3833,15 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           ClipRRect(
                             borderRadius: BorderRadius.circular(6),
                             child: SizedBox(
-                              width: 36,
+                              width: 52,
                               height: 36,
                               child:
                                   channel.tvgLogo != null &&
                                       channel.tvgLogo!.isNotEmpty
                                   ? Image.network(
                                       channel.tvgLogo!,
-                                      fit: BoxFit.cover,
-                                      cacheWidth: 128,
+                                      fit: BoxFit.contain,
+                                      cacheWidth: 160,
                                       errorBuilder: (_, e, s) => Container(
                                         color: const Color(0xFF16213E),
                                         child: const Icon(
@@ -4134,13 +4134,13 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                       primary.tvgLogo!.isNotEmpty
                                   ? Image.network(
                                       primary.tvgLogo!,
-                                      width: 28,
+                                      width: 44,
                                       height: 28,
                                       fit: BoxFit.contain,
-                                      cacheWidth: 96,
+                                      cacheWidth: 128,
                                       cacheHeight: 96,
                                       errorBuilder: (_, __, ___) => Container(
-                                        width: 28,
+                                        width: 44,
                                         height: 28,
                                         color: const Color(0xFF16213E),
                                         child: const Icon(
@@ -4151,7 +4151,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                       ),
                                     )
                                   : Container(
-                                      width: 28,
+                                      width: 44,
                                       height: 28,
                                       color: const Color(0xFF16213E),
                                       child: const Icon(
@@ -4328,14 +4328,14 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           ClipRRect(
                             borderRadius: BorderRadius.circular(3),
                             child: SizedBox(
-                              width: 22,
+                              width: 34,
                               height: 22,
                               child:
                                   ch.tvgLogo != null && ch.tvgLogo!.isNotEmpty
                                   ? Image.network(
                                       ch.tvgLogo!,
                                       fit: BoxFit.contain,
-                                      cacheWidth: 96,
+                                      cacheWidth: 120,
                                       cacheHeight: 96,
                                       errorBuilder: (_, __, ___) => const Icon(
                                         Icons.tv,
@@ -4764,15 +4764,15 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                       ClipRRect(
                         borderRadius: BorderRadius.circular(6),
                         child: SizedBox(
-                          width: 36,
+                          width: 52,
                           height: 36,
                           child:
                               primary?.tvgLogo != null &&
                                   primary!.tvgLogo!.isNotEmpty
                               ? Image.network(
                                   primary.tvgLogo!,
-                                  fit: BoxFit.cover,
-                                  cacheWidth: 128,
+                                  fit: BoxFit.contain,
+                                  cacheWidth: 160,
                                   errorBuilder: (_, __, ___) => Container(
                                     color: const Color(0xFF16213E),
                                     child: const Icon(
@@ -4944,14 +4944,14 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                             ClipRRect(
                               borderRadius: BorderRadius.circular(4),
                               child: SizedBox(
-                                width: 24,
+                                width: 36,
                                 height: 24,
                                 child:
                                     ch.tvgLogo != null && ch.tvgLogo!.isNotEmpty
                                     ? Image.network(
                                         ch.tvgLogo!,
-                                        fit: BoxFit.cover,
-                                        cacheWidth: 96,
+                                        fit: BoxFit.contain,
+                                        cacheWidth: 120,
                                         errorBuilder: (_, __, ___) =>
                                             const Icon(
                                               Icons.tv,
@@ -6424,10 +6424,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                                           .isNotEmpty
                                                   ? Image.network(
                                                       channel.tvgLogo!,
-                                                      width: 28,
+                                                      width: 44,
                                                       height: 28,
                                                       fit: BoxFit.contain,
-                                                      cacheWidth: 96,
+                                                      cacheWidth: 128,
                                                       cacheHeight: 96,
                                                       errorBuilder:
                                                           (
@@ -6435,7 +6435,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                                             __,
                                                             ___,
                                                           ) => Container(
-                                                            width: 28,
+                                                            width: 44,
                                                             height: 28,
                                                             color: const Color(
                                                               0xFF16213E,
@@ -6449,7 +6449,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                                           ),
                                                     )
                                                   : Container(
-                                                      width: 28,
+                                                      width: 44,
                                                       height: 28,
                                                       color: const Color(
                                                         0xFF16213E,

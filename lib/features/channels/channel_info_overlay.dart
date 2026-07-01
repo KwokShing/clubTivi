@@ -219,9 +219,9 @@ class _ChannelInfoOverlayState extends State<ChannelInfoOverlay>
                           borderRadius: BorderRadius.circular(4),
                           child: Image.network(
                             widget.channelLogo!,
-                            width: 28,
+                            width: 44,
                             height: 28,
-                            cacheWidth: 96,
+                            cacheWidth: 128,
                             cacheHeight: 96,
                             fit: BoxFit.contain,
                             errorBuilder: (c, e, s) =>
