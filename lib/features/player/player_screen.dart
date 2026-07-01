@@ -649,6 +649,49 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   ),
                 ),
 
+                // Load-timeout message — shown when a stream fails to start
+                // playing within the load timeout window.
+                Center(
+                  child: StreamBuilder<bool>(
+                    stream: playerService.loadTimeoutStream,
+                    initialData: playerService.loadTimedOut,
+                    builder: (context, snapshot) {
+                      if (snapshot.data != true) {
+                        return const SizedBox.shrink();
+                      }
+                      return Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: const Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.error_outline_rounded,
+                              color: Colors.white70,
+                              size: 40,
+                            ),
+                            SizedBox(height: 10),
+                            Text(
+                              'Loading timed out',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+
                 // TiviMate-style control bar overlay
                 PlayerControlBar(
                   visible: _showOverlay,

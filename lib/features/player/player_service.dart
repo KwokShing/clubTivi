@@ -29,6 +29,19 @@ class PlayerService {
   StreamSubscription<bool>? _bufferTrackSub;
   StreamSubscription<bool>? _completedSub; // auto-resume on segment end
 
+  // ── Load timeout: fail a stream that never starts within a grace window ──
+  static const _loadTimeout = Duration(seconds: 15);
+  Timer? _loadTimeoutTimer;
+  StreamSubscription<Duration>? _loadStartSub;
+  bool _playbackStarted = false;
+  bool _loadTimedOut = false;
+  bool get loadTimedOut => _loadTimedOut;
+  final _loadTimeoutController = StreamController<bool>.broadcast();
+
+  /// Emits `true` when a stream fails to start playing within [_loadTimeout]
+  /// (loading is then stopped), and `false` when a new load begins.
+  Stream<bool> get loadTimeoutStream => _loadTimeoutController.stream;
+
   /// Whether the current stream is live (HLS without ENDLIST / short window).
   /// Drives live-tuned buffering and throttled EOF handling.
   bool _isLiveStream = false;
@@ -252,6 +265,57 @@ class PlayerService {
     bufferingSeconds = 0;
     startBufferTracking();
     _startFailoverMonitor();
+    _startLoadTimeout();
+  }
+
+  /// Arm a timeout that stops a stream which never starts playing within
+  /// [_loadTimeout]. Cancelled automatically once playback actually begins
+  /// (the position advances). Surfaces via [loadTimeoutStream] so the play
+  /// window can show a "Loading timed out" message.
+  void _startLoadTimeout() {
+    _loadTimeoutTimer?.cancel();
+    _loadStartSub?.cancel();
+    _playbackStarted = false;
+    if (_loadTimedOut) {
+      _loadTimedOut = false;
+      _loadTimeoutController.add(false);
+    }
+    // Playback is considered "started" once frames flow (position advances).
+    _loadStartSub = player.stream.position.listen((pos) {
+      if (pos > Duration.zero) {
+        _playbackStarted = true;
+        _loadTimeoutTimer?.cancel();
+        _loadStartSub?.cancel();
+        _loadStartSub = null;
+      }
+    });
+    _loadTimeoutTimer = Timer(_loadTimeout, () {
+      // Already playing smoothly → not a timeout.
+      if (_playbackStarted ||
+          (player.state.playing && !player.state.buffering)) {
+        return;
+      }
+      debugPrint(
+        '[Player] Load timeout after ${_loadTimeout.inSeconds}s — stopping',
+      );
+      _loadTimedOut = true;
+      _loadTimeoutController.add(true);
+      _loadStartSub?.cancel();
+      _loadStartSub = null;
+      // Stop loading the stalled stream (player instance kept for retry).
+      player.stop();
+    });
+  }
+
+  void _cancelLoadTimeout() {
+    _loadTimeoutTimer?.cancel();
+    _loadTimeoutTimer = null;
+    _loadStartSub?.cancel();
+    _loadStartSub = null;
+    if (_loadTimedOut) {
+      _loadTimedOut = false;
+      _loadTimeoutController.add(false);
+    }
   }
 
   /// Whether audio tracks are available on the current stream.
@@ -266,6 +330,7 @@ class PlayerService {
   Future<void> stop() async {
     _bufferManager.stop();
     _failoverCheckTimer?.cancel();
+    _cancelLoadTimeout();
     // Tear down buffer-tracking so its timer/subscription don't keep firing
     // (and keep the player's stream alive) after playback has stopped.
     _bufferTrackSub?.cancel();
@@ -661,6 +726,9 @@ class PlayerService {
       _completedSub?.cancel();
       _bufferTrackTimer?.cancel();
       _failoverCheckTimer?.cancel();
+      _loadTimeoutTimer?.cancel();
+      _loadStartSub?.cancel();
+      _loadTimeoutController.close();
       _disposeWarmPlayer();
       _healthTracker?.save();
       _player?.dispose();

@@ -2333,6 +2333,45 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
           ),
           // Tap-to-reveal info + play bar overlay (auto-hides after 3s)
           _buildPreviewOverlay(playerService),
+          // Load-timeout message — shown when a stream fails to start in time.
+          Center(
+            child: StreamBuilder<bool>(
+              stream: playerService.loadTimeoutStream,
+              initialData: playerService.loadTimedOut,
+              builder: (context, snapshot) {
+                if (snapshot.data != true) return const SizedBox.shrink();
+                return Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.error_outline_rounded,
+                        color: Colors.white70,
+                        size: 32,
+                      ),
+                      SizedBox(height: 8),
+                      Text(
+                        'Loading timed out',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
           if (_showVolumeOverlay)
             Positioned(
               top: 8,
