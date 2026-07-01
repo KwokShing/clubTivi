@@ -82,9 +82,9 @@ class PlayerService {
       _player = Player(
         configuration: const PlayerConfiguration(
           logLevel: MPVLogLevel.warn,
-          // Match the known-good lightweight reference: a healthy demuxer
-          // buffer so heavy 4K HEVC streams have room to prime.
-          bufferSize: 64 * 1024 * 1024,
+          // Demuxer cache is bounded by the adaptive buffer tiers; keep the
+          // media_kit-level buffer modest so total playback memory stays low.
+          bufferSize: 32 * 1024 * 1024,
         ),
       );
       _initPlayer(_player!);
@@ -266,6 +266,16 @@ class PlayerService {
   Future<void> stop() async {
     _bufferManager.stop();
     _failoverCheckTimer?.cancel();
+    // Tear down buffer-tracking so its timer/subscription don't keep firing
+    // (and keep the player's stream alive) after playback has stopped.
+    _bufferTrackSub?.cancel();
+    _bufferTrackSub = null;
+    _bufferTrackTimer?.cancel();
+    _bufferTrackTimer = null;
+    _completedSub?.cancel();
+    _completedSub = null;
+    _trackingBuffering = false;
+    _disposeWarmPlayer();
     await player.stop();
     // Clear current-channel tracking so re-selecting the same channel after a
     // stop will (re)load it instead of being skipped as "already playing".
@@ -325,12 +335,24 @@ class PlayerService {
   /// treated as VOD. Network/parse failures fall back to VOD so a slow probe
   /// never blocks playback. Bounded by a short timeout.
   Future<bool> _detectLive(String url) async {
-    if (!url.toLowerCase().contains('.m3u8')) return false;
+    final lower = url.toLowerCase();
+    // Explicit VOD container files → treat as VOD (large readahead is fine,
+    // the whole file is seekable).
+    if (RegExp(r'\.(mp4|mkv|avi|mov|webm|m4v|flv|mpg|mpeg)(\?|$)')
+        .hasMatch(lower)) {
+      return false;
+    }
+    // Non-HLS streams (raw MPEG-TS, tokenized/extensionless live URLs) can't
+    // be probed for #EXT-X-ENDLIST. Default them to LIVE so they use the
+    // small, low-latency live buffer instead of the large VOD readahead
+    // profile — otherwise an infinite live stream fills the VOD demuxer cache
+    // and pins hundreds of MB for the whole session.
+    if (!lower.contains('.m3u8')) return true;
     try {
       final headers = await _probeHeaders();
       final uri = Uri.parse(url);
       var body = await _fetchPlaylist(uri, headers);
-      if (body == null) return false;
+      if (body == null) return true; // probe failed → assume live (small buffer)
 
       // Master playlist → resolve and probe the first variant.
       if (body.contains('#EXT-X-STREAM-INF')) {
@@ -343,12 +365,12 @@ class PlayerService {
 
       final isMediaPlaylist = body.contains('#EXTINF');
       final hasEndList = body.contains('#EXT-X-ENDLIST');
-      final live = isMediaPlaylist && !hasEndList;
+      final live = !isMediaPlaylist || !hasEndList;
       debugPrint('[Player] Live detection: $live for $url');
       return live;
     } catch (e) {
-      debugPrint('[Player] Live detection failed (assuming VOD): $e');
-      return false;
+      debugPrint('[Player] Live detection failed (assuming live): $e');
+      return true;
     }
   }
 

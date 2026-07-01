@@ -83,6 +83,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   List<SubtitleTrack> _subtitleTracks = [];
   List<AudioTrack> _audioTracks = [];
 
+  // Subscription to the shared player's track stream. Held so it can be
+  // cancelled on dispose — the player is a long-lived singleton, so an
+  // uncancelled listener would leak this State across playback sessions.
+  StreamSubscription<Tracks>? _tracksSub;
+
   @override
   void initState() {
     super.initState();
@@ -209,8 +214,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       );
     }
 
-    // Load track info once tracks become available
-    playerService.player.stream.tracks.listen((tracks) {
+    // Load track info once tracks become available. Cancel any previous
+    // subscription first so re-entry (e.g. channel switch) doesn't stack
+    // listeners on the singleton player.
+    _tracksSub?.cancel();
+    _tracksSub = playerService.player.stream.tracks.listen((tracks) {
       if (mounted) _loadTrackInfo();
     });
   }
@@ -558,6 +566,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   @override
   void dispose() {
+    _tracksSub?.cancel();
     _overlayTimer?.cancel();
     _volumeTimer?.cancel();
     FullscreenHelper.exitFullscreen();
@@ -708,6 +717,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                 _currentChannelLogo!,
                                 width: 24,
                                 height: 24,
+                                cacheWidth: 96,
+                                cacheHeight: 96,
                                 errorBuilder: (c, e, s) => const SizedBox(),
                               ),
                             ),
@@ -970,6 +981,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                                           ch['tvgLogo'] as String,
                                           width: 28,
                                           height: 28,
+                                          cacheWidth: 96,
+                                          cacheHeight: 96,
                                           errorBuilder: (_, __, ___) =>
                                               const Icon(
                                                 Icons.tv,

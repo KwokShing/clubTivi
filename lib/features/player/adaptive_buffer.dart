@@ -27,25 +27,32 @@ class AdaptiveBufferManager {
   // the stream recover naturally or trigger auto-failover instead. Large
   // readahead is fine because VOD playlists expose the whole file.
   // Tiers differ only in readahead aggressiveness.
+  //
+  // Byte caps are the real memory ceiling. Live streams misclassified as VOD
+  // (any non-.m3u8 URL) previously inherited 800M forward + 200M back = ~1 GB
+  // of demuxer cache that mpv pins for the whole session — which reads as a
+  // runaway memory leak. Caps are kept modest here so total demuxer memory
+  // stays bounded (well under ~300 MB) regardless of classification; tiers
+  // still float readahead to trade latency for resilience on flaky streams.
   static const _tierConfig = <String, Map<String, String>>{
     'fast': {
       'cache': 'yes',
-      'cache-secs': '180',
+      'cache-secs': '60',
       'cache-pause': 'no',
       'cache-pause-initial': 'no',
       'cache-pause-wait': '0',
-      'demuxer-max-bytes': '800M',
-      'demuxer-max-back-bytes': '200M',
+      'demuxer-max-bytes': '96M',
+      'demuxer-max-back-bytes': '32M',
       'demuxer-readahead-secs': '60',
     },
     'normal': {
       'cache': 'yes',
-      'cache-secs': '180',
+      'cache-secs': '120',
       'cache-pause': 'no',
       'cache-pause-initial': 'no',
       'cache-pause-wait': '0',
-      'demuxer-max-bytes': '800M',
-      'demuxer-max-back-bytes': '200M',
+      'demuxer-max-bytes': '160M',
+      'demuxer-max-back-bytes': '48M',
       'demuxer-readahead-secs': '120',
     },
     'aggressive': {
@@ -54,8 +61,8 @@ class AdaptiveBufferManager {
       'cache-pause': 'no',
       'cache-pause-initial': 'no',
       'cache-pause-wait': '0',
-      'demuxer-max-bytes': '800M',
-      'demuxer-max-back-bytes': '200M',
+      'demuxer-max-bytes': '256M',
+      'demuxer-max-back-bytes': '64M',
       'demuxer-readahead-secs': '180',
     },
   };
@@ -77,8 +84,8 @@ class AdaptiveBufferManager {
       'cache-pause': 'yes',
       'cache-pause-initial': 'yes',
       'cache-pause-wait': '1',
-      'demuxer-max-bytes': '256M',
-      'demuxer-max-back-bytes': '64M',
+      'demuxer-max-bytes': '96M',
+      'demuxer-max-back-bytes': '32M',
       'demuxer-readahead-secs': '10',
     },
     'normal': {
@@ -87,8 +94,8 @@ class AdaptiveBufferManager {
       'cache-pause': 'yes',
       'cache-pause-initial': 'yes',
       'cache-pause-wait': '1',
-      'demuxer-max-bytes': '256M',
-      'demuxer-max-back-bytes': '64M',
+      'demuxer-max-bytes': '128M',
+      'demuxer-max-back-bytes': '48M',
       'demuxer-readahead-secs': '20',
     },
     'aggressive': {
@@ -97,8 +104,8 @@ class AdaptiveBufferManager {
       'cache-pause': 'yes',
       'cache-pause-initial': 'yes',
       'cache-pause-wait': '2',
-      'demuxer-max-bytes': '512M',
-      'demuxer-max-back-bytes': '128M',
+      'demuxer-max-bytes': '256M',
+      'demuxer-max-back-bytes': '64M',
       'demuxer-readahead-secs': '40',
     },
   };

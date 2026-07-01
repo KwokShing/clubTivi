@@ -17,6 +17,13 @@ void main() async {
       WidgetsFlutterBinding.ensureInitialized();
       MediaKit.ensureInitialized();
 
+      // Bound Flutter's global image cache. IPTV logos are numerous and can be
+      // large source PNGs; the default 100 MB / 1000-entry cache lets decoded
+      // bitmaps pile up and stay resident. Cap it so logo memory can't grow
+      // unbounded during long browsing/playback sessions.
+      PaintingBinding.instance.imageCache.maximumSizeBytes = 50 << 20; // 50 MiB
+      PaintingBinding.instance.imageCache.maximumSize = 200;
+
       // Initialize window_manager for desktop platforms (Windows/macOS/Linux)
       if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
         await windowManager.ensureInitialized();

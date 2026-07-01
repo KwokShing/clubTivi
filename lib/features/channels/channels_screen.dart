@@ -3841,6 +3841,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                   ? Image.network(
                                       channel.tvgLogo!,
                                       fit: BoxFit.cover,
+                                      cacheWidth: 128,
                                       errorBuilder: (_, e, s) => Container(
                                         color: const Color(0xFF16213E),
                                         child: const Icon(
@@ -4136,6 +4137,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                       width: 28,
                                       height: 28,
                                       fit: BoxFit.contain,
+                                      cacheWidth: 96,
+                                      cacheHeight: 96,
                                       errorBuilder: (_, __, ___) => Container(
                                         width: 28,
                                         height: 28,
@@ -4332,6 +4335,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                   ? Image.network(
                                       ch.tvgLogo!,
                                       fit: BoxFit.contain,
+                                      cacheWidth: 96,
+                                      cacheHeight: 96,
                                       errorBuilder: (_, __, ___) => const Icon(
                                         Icons.tv,
                                         size: 12,
@@ -4767,6 +4772,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                               ? Image.network(
                                   primary.tvgLogo!,
                                   fit: BoxFit.cover,
+                                  cacheWidth: 128,
                                   errorBuilder: (_, __, ___) => Container(
                                     color: const Color(0xFF16213E),
                                     child: const Icon(
@@ -4945,6 +4951,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                     ? Image.network(
                                         ch.tvgLogo!,
                                         fit: BoxFit.cover,
+                                        cacheWidth: 96,
                                         errorBuilder: (_, __, ___) =>
                                             const Icon(
                                               Icons.tv,
@@ -6420,6 +6427,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                                       width: 28,
                                                       height: 28,
                                                       fit: BoxFit.contain,
+                                                      cacheWidth: 96,
+                                                      cacheHeight: 96,
                                                       errorBuilder:
                                                           (
                                                             _,
