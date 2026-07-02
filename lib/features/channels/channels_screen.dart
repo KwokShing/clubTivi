@@ -741,6 +741,11 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         epgChannelIds.add(mapped);
         continue;
       }
+      // tvg-name first (preferred when present), then tvg-id.
+      if (c.tvgName != null && c.tvgName!.isNotEmpty) {
+        final prefixed = rawToPrefixed[c.tvgName!.toLowerCase()];
+        if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
+      }
       if (c.tvgId != null && c.tvgId!.isNotEmpty) {
         final prefixed = rawToPrefixed[c.tvgId!.toLowerCase()];
         if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
@@ -1061,21 +1066,30 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   // EPG helpers
   // ---------------------------------------------------------------------------
 
-  /// Get the effective EPG channel ID: mapped ID takes priority, then tvgId, then name match.
+  /// Get the effective EPG channel ID. Priority: manual mapping, then tvg-name
+  /// (preferred when present), then tvg-id, both matched against the XMLTV
+  /// channel id; finally normalized-name and call-sign fallbacks.
   String? _getEpgId(db.Channel channel) {
     final mapped = _epgMappings[channel.id];
     if (mapped != null && mapped.isNotEmpty) return mapped;
+
+    // 1. tvg-name → XMLTV channel id (use tvg-name first when it's set).
+    if (channel.tvgName != null && channel.tvgName!.isNotEmpty) {
+      final prefixed = _rawToPrefixedEpg[channel.tvgName!.toLowerCase()];
+      if (prefixed != null) return prefixed;
+    }
+    // 2. tvg-id → XMLTV channel id (fallback when tvg-name is empty/unmatched).
     if (channel.tvgId != null && channel.tvgId!.isNotEmpty) {
       final prefixed = _rawToPrefixedEpg[channel.tvgId!.toLowerCase()];
       if (prefixed != null) return prefixed;
     }
-    // Fallback: match by normalized channel name against EPG display names
+    // 3. Fallback: normalized channel name against EPG display names.
     final normName = _normalizeForEpgMatch(channel.name);
     if (normName.isNotEmpty) {
       final byName = _epgNameToId[normName];
       if (byName != null) return byName;
     }
-    // Fallback: match by broadcast call sign (WABC, WCBS, etc.)
+    // 4. Fallback: broadcast call sign (WABC, WCBS, etc.).
     final callSign = _extractCallSign(channel.name, channel.tvgId);
     if (callSign != null) {
       final byCs = _epgCallSignToId[callSign];
