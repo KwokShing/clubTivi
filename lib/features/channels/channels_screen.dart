@@ -4221,11 +4221,17 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                       _qualityBadge(channel.name)!,
                                   ],
                                 ),
-                                if (_getProviderName(
-                                      channel.providerId,
-                                    ).isNotEmpty ||
-                                    (channel.groupTitle != null &&
-                                        channel.groupTitle!.isNotEmpty))
+                                // Only show the provider/group subtitle for
+                                // search results (top-bar or sidebar search);
+                                // in normal browsing the group is already
+                                // implied by the selected list.
+                                if ((_searchQuery.isNotEmpty ||
+                                        _sidebarSearchQuery.isNotEmpty) &&
+                                    (_getProviderName(
+                                          channel.providerId,
+                                        ).isNotEmpty ||
+                                        (channel.groupTitle != null &&
+                                            channel.groupTitle!.isNotEmpty)))
                                   Text(
                                     [
                                       if (_getProviderName(
