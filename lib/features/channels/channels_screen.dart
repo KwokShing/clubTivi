@@ -4310,13 +4310,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                 size: 16,
                               ),
                             ),
-                          // Now-playing indicator
-                          if (isSelected)
-                            const Icon(
-                              Icons.play_arrow_rounded,
-                              color: Color(0xFF6C5CE7),
-                              size: 20,
-                            ),
                         ],
                       ),
                     ),
