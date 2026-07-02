@@ -232,30 +232,67 @@ class AppDatabase extends _$AppDatabase {
             ..orderBy([(t) => OrderingTerm.asc(t.start)]))
           .get();
 
+  /// Set of EPG channel ids (prefixed `${sourceId}_${channelId}`) that have at
+  /// least one programme row. Used to disambiguate duplicate channel names
+  /// across sources — prefer the EPG channel that actually has guide data.
+  Future<Set<String>> getEpgChannelIdsWithProgrammes() async {
+    final rows = await customSelect(
+      'SELECT DISTINCT epg_channel_id FROM epg_programmes',
+      readsFrom: {epgProgrammes},
+    ).get();
+    return rows.map((r) => r.read<String>('epg_channel_id')).toSet();
+  }
+
+  /// Max ids per `IN (...)` clause. SQLite caps host parameters
+  /// (SQLITE_MAX_VARIABLE_NUMBER — 999 on older builds), so queries over a
+  /// large channel set must be split into chunks or they throw "too many SQL
+  /// variables" and return nothing. 500 keeps us safely under every limit.
+  static const _sqlInChunkSize = 500;
+
   /// Get what's on now for a list of EPG channel IDs.
-  Future<List<EpgProgramme>> getNowPlaying(List<String> epgChannelIds) {
+  Future<List<EpgProgramme>> getNowPlaying(List<String> epgChannelIds) async {
+    if (epgChannelIds.isEmpty) return [];
     final now = DateTime.now();
-    return (select(epgProgrammes)..where(
-          (t) =>
-              t.epgChannelId.isIn(epgChannelIds) &
-              t.start.isSmallerOrEqualValue(now) &
-              t.stop.isBiggerOrEqualValue(now),
-        ))
-        .get();
+    final results = <EpgProgramme>[];
+    for (var i = 0; i < epgChannelIds.length; i += _sqlInChunkSize) {
+      final chunk = epgChannelIds.sublist(
+        i,
+        (i + _sqlInChunkSize).clamp(0, epgChannelIds.length),
+      );
+      final rows = await (select(epgProgrammes)..where(
+            (t) =>
+                t.epgChannelId.isIn(chunk) &
+                t.start.isSmallerOrEqualValue(now) &
+                t.stop.isBiggerOrEqualValue(now),
+          ))
+          .get();
+      results.addAll(rows);
+    }
+    return results;
   }
 
   Future<List<EpgProgramme>> getNowPlayingWindow(
     List<String> epgChannelIds,
     DateTime from,
     DateTime to,
-  ) {
-    return (select(epgProgrammes)..where(
-          (t) =>
-              t.epgChannelId.isIn(epgChannelIds) &
-              t.start.isSmallerOrEqualValue(to) &
-              t.stop.isBiggerOrEqualValue(from),
-        ))
-        .get();
+  ) async {
+    if (epgChannelIds.isEmpty) return [];
+    final results = <EpgProgramme>[];
+    for (var i = 0; i < epgChannelIds.length; i += _sqlInChunkSize) {
+      final chunk = epgChannelIds.sublist(
+        i,
+        (i + _sqlInChunkSize).clamp(0, epgChannelIds.length),
+      );
+      final rows = await (select(epgProgrammes)..where(
+            (t) =>
+                t.epgChannelId.isIn(chunk) &
+                t.start.isSmallerOrEqualValue(to) &
+                t.stop.isBiggerOrEqualValue(from),
+          ))
+          .get();
+      results.addAll(rows);
+    }
+    return results;
   }
 
   Future<void> insertProgrammes(List<EpgProgrammesCompanion> entries) async {

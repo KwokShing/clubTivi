@@ -6,6 +6,13 @@ import '../models/epg.dart';
 /// Automatically maps provider channels to EPG channels using multiple
 /// fuzzy matching strategies. Designed for epg.best and other XMLTV sources.
 class EpgAutoMapper {
+  /// CJK high-definition qualifiers stripped before matching so e.g. a channel
+  /// "CCTV5" matches an EPG entry "CCTV-5高清". Longer variants first so the
+  /// whole qualifier is removed, not just the trailing "高清".
+  static final _hdTerms = RegExp(r'全高清|超高清|高清');
+
+  static String _stripHdTerms(String s) => s.replaceAll(_hdTerms, '');
+
   /// Minimum confidence to auto-apply a mapping.
   static const double autoApplyThreshold = 0.70;
 
@@ -240,6 +247,9 @@ class EpgAutoMapper {
       cleaned = cleaned.replaceAll(RegExp(r'\([^)]*\)'), '');
     }
 
+    // Remove CJK HD qualifiers (高清 / 全高清 / 超高清)
+    cleaned = _stripHdTerms(cleaned);
+
     // Collapse whitespace
     cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
     return cleaned;
@@ -299,7 +309,7 @@ class EpgAutoMapper {
       double bestScore = 0;
 
       for (final epgName in epgCh.displayNames) {
-        final normalizedEpg = epgName.toLowerCase();
+        final normalizedEpg = _stripHdTerms(epgName.toLowerCase());
 
         // Exact (case-insensitive)
         if (normalizedInput == normalizedEpg) {
