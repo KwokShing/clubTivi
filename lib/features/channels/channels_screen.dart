@@ -14,6 +14,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/countdown_snackbar.dart';
+import '../../core/platform_info.dart';
 import '../../core/weather_clock_widget.dart';
 import '../../data/datasources/local/database.dart' as db;
 import '../../data/datasources/remote/tmdb_client.dart';
@@ -59,6 +60,12 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   Map<String, String> _epgCallSignToId =
       {}; // call sign (e.g. WABC) → prefixed id
   bool _showGuideView = true;
+
+  /// Use the compact vertical EPG layout (inline now/next + progress + tap to
+  /// expand schedule) everywhere except Android TV, whose D-pad-driven
+  /// horizontal timeline grid stays. Enabled on desktop too so it can be
+  /// validated without an iOS build.
+  bool get _useMobileEpg => !PlatformInfo.isTV;
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
   List<String> _searchHistory = [];
@@ -1138,6 +1145,248 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     return matches.isNotEmpty ? matches.first : null;
   }
 
+  /// Progress fraction (0..1) into the current programme, honoring timeshift.
+  double? _channelProgress(db.Channel channel) {
+    final p = _getEpgProgramme(channel);
+    if (p == null) return null;
+    final shift = _epgTimeshifts[channel.id] ?? 0;
+    final now = DateTime.now().subtract(Duration(hours: shift));
+    final total = p.stop.difference(p.start).inSeconds;
+    if (total <= 0) return null;
+    final elapsed = now.difference(p.start).inSeconds;
+    return (elapsed / total).clamp(0.0, 1.0);
+  }
+
+  /// Mobile channel-tile EPG rows: now-playing title + progress bar + next.
+  /// Returns [] when the channel has no EPG (or just a loading hint).
+  List<Widget> _buildMobileEpgLines(db.Channel channel) {
+    final current = _getEpgProgramme(channel);
+    if (current == null) {
+      if (_epgLoading) {
+        return const [
+          Text(
+            'Loading guide…',
+            style: TextStyle(
+              color: Colors.white24,
+              fontSize: 11,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ];
+      }
+      return const [];
+    }
+    final shift = _epgTimeshifts[channel.id] ?? 0;
+    final progress = _channelProgress(channel);
+    final next = _getNextProgramme(channel);
+    return [
+      const SizedBox(height: 3),
+      Text(
+        current.title,
+        style: const TextStyle(
+          color: Color(0xFF6C5CE7),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      if (progress != null) ...[
+        const SizedBox(height: 3),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(2),
+          child: LinearProgressIndicator(
+            value: progress,
+            minHeight: 3,
+            backgroundColor: Colors.white12,
+            valueColor: const AlwaysStoppedAnimation(Color(0xFF6C5CE7)),
+          ),
+        ),
+      ],
+      if (next != null) ...[
+        const SizedBox(height: 3),
+        Text(
+          '${_formatTime(next.start.add(Duration(hours: shift)))}  ${next.title}',
+          style: const TextStyle(color: Colors.white38, fontSize: 11),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    ];
+  }
+
+  /// Bottom sheet showing a channel's full vertical schedule (mobile).
+  void _showChannelSchedule(db.Channel channel) {
+    final epgId = _getEpgId(channel);
+    if (epgId == null) return;
+    final database = ref.read(databaseProvider);
+    final shift = _epgTimeshifts[channel.id] ?? 0;
+    final now = DateTime.now();
+    // EPG/source time window = wall window [now-6h, now+24h] minus the shift.
+    final qStart = now.subtract(Duration(hours: 6 + shift));
+    final qEnd = now.add(Duration(hours: 24 - shift));
+    // One-time guard so the auto-scroll-to-now only fires on first data load
+    // (FutureBuilder rebuilds would otherwise re-trigger it).
+    var didScrollToNow = false;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF16213E),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.6,
+          minChildSize: 0.3,
+          maxChildSize: 0.92,
+          builder: (ctx, scrollController) {
+            return Column(
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    _channelDisplayName(channel),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Divider(height: 1, color: Colors.white12),
+                Expanded(
+                  child: FutureBuilder<List<db.EpgProgramme>>(
+                    future: database.getProgrammes(
+                      epgChannelId: epgId,
+                      start: qStart,
+                      end: qEnd,
+                    ),
+                    builder: (ctx, snap) {
+                      if (!snap.hasData) {
+                        return const Center(
+                          child: CircularProgressIndicator(),
+                        );
+                      }
+                      final progs = snap.data!;
+                      if (progs.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'No EPG data',
+                            style: TextStyle(color: Colors.white38),
+                          ),
+                        );
+                      }
+                      final nowEpg = now.subtract(Duration(hours: shift));
+                      const itemExtent = 48.0;
+                      // Default view: put the current programme at the top
+                      // (earlier programmes remain reachable by scrolling up).
+                      final currentIndex = progs.indexWhere(
+                        (p) =>
+                            !p.start.isAfter(nowEpg) && p.stop.isAfter(nowEpg),
+                      );
+                      if (!didScrollToNow && currentIndex > 0) {
+                        didScrollToNow = true;
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (scrollController.hasClients) {
+                            final target = (currentIndex * itemExtent).clamp(
+                              0.0,
+                              scrollController.position.maxScrollExtent,
+                            );
+                            scrollController.jumpTo(target);
+                          }
+                        });
+                      }
+                      return ListView.builder(
+                        controller: scrollController,
+                        itemExtent: itemExtent,
+                        itemCount: progs.length,
+                        itemBuilder: (ctx, i) {
+                          final p = progs[i];
+                          final isCurrent = !p.start.isAfter(nowEpg) &&
+                              p.stop.isAfter(nowEpg);
+                          final startLocal =
+                              p.start.add(Duration(hours: shift));
+                          return Container(
+                            color: isCurrent
+                                ? const Color(0xFF6C5CE7).withValues(alpha: 0.15)
+                                : null,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: 60,
+                                  child: Text(
+                                    _formatTime(startLocal),
+                                    style: TextStyle(
+                                      color: isCurrent
+                                          ? const Color(0xFF6C5CE7)
+                                          : Colors.white54,
+                                      fontSize: 12,
+                                      fontWeight: isCurrent
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    p.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: isCurrent
+                                          ? Colors.white
+                                          : Colors.white70,
+                                      fontSize: 13,
+                                      fontWeight: isCurrent
+                                          ? FontWeight.w600
+                                          : FontWeight.normal,
+                                    ),
+                                  ),
+                                ),
+                                if (isCurrent)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 8),
+                                    child: Icon(
+                                      Icons.play_arrow_rounded,
+                                      color: Color(0xFF6C5CE7),
+                                      size: 16,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   String _formatTime(DateTime dt) {
     if (_use24HourTime) {
       return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
@@ -1450,7 +1699,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                         Expanded(
                           child: Stack(
                             children: [
-                              _showGuideView
+                              // Vertical list with inline now/next EPG on
+                              // phone + desktop; horizontal timeline grid only
+                              // on Android TV.
+                              (_showGuideView && !_useMobileEpg)
                                   ? _buildGuideView()
                                   : _buildChannelList(),
                               if (_multiSelectMode)
@@ -3747,7 +3999,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                     ),
                                     overflow: TextOverflow.ellipsis,
                                   ),
-                                if (_getChannelNowPlaying(channel) != null)
+                                if (_useMobileEpg)
+                                  ..._buildMobileEpgLines(channel)
+                                else if (_getChannelNowPlaying(channel) != null)
                                   Text(
                                     _getChannelNowPlaying(channel)!,
                                     style: const TextStyle(
@@ -3768,6 +4022,23 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                               ],
                             ),
                           ),
+                          // Tap to expand this channel's vertical schedule
+                          if (_useMobileEpg && _getEpgId(channel) != null)
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              icon: const Icon(
+                                Icons.expand_more_rounded,
+                                color: Colors.white38,
+                                size: 20,
+                              ),
+                              tooltip: 'Show schedule',
+                              onPressed: () => _showChannelSchedule(channel),
+                            ),
                           // Favorite indicator
                           if (isFavorited)
                             const Padding(
