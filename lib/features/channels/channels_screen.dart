@@ -104,6 +104,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
   StreamSubscription<List<db.Provider>>? _providersSub;
   StreamSubscription<List<db.Channel>>? _channelsSub;
+  StreamSubscription<List<db.EpgSource>>? _epgSourcesSub;
 
   // Provider list for sidebar
   List<db.Provider> _providers = [];
@@ -198,6 +199,22 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       chanDebounce?.cancel();
       chanDebounce = Timer(const Duration(milliseconds: 500), () {
         if (mounted) _onChannelsSnapshot(all);
+      });
+    });
+    // Watch EPG sources: a background EPG refresh bumps a source's lastRefresh
+    // when it finishes storing programmes. Rebuild the EPG index + now-playing
+    // then, so the inline "now playing" appears as soon as data lands instead
+    // of only after the 60s timer or a manual playlist switch.
+    Timer? epgSrcDebounce;
+    _epgSourcesSub = database.select(database.epgSources).watch().listen((_) {
+      epgSrcDebounce?.cancel();
+      epgSrcDebounce = Timer(const Duration(milliseconds: 800), () {
+        if (!mounted || _allChannels.isEmpty) return;
+        _loadEpgData(
+          ref.read(databaseProvider),
+          _allChannels,
+          _favoritedChannelIds,
+        );
       });
     });
     // Refresh now-playing every 60 seconds so the info panel stays current
@@ -420,6 +437,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _previewControlsTimer?.cancel();
     _providersSub?.cancel();
     _channelsSub?.cancel();
+    _epgSourcesSub?.cancel();
     _longPressTimer?.cancel();
     _epgReindexTimer?.cancel();
     _logoResolveTimer?.cancel();
@@ -793,6 +811,11 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       _epgNameToId = epgNameToId;
       _epgCallSignToId = epgCallSignToId;
     });
+
+    // The scoped now-playing above only covers favorites. Immediately extend it
+    // to the currently visible group too, so the inline "now playing" shows on
+    // first load without waiting for the 60s timer or a manual playlist switch.
+    _scheduleNowPlayingRefresh();
   }
 
   Future<void> _restoreSession() async {
