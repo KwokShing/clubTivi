@@ -48,6 +48,13 @@ class ProvidersScreen extends ConsumerWidget {
         ),
         title: const Text('IPTV Providers'),
         actions: [
+          Builder(
+            builder: (context) => IconButton(
+              icon: const Icon(Icons.sync_rounded, size: 26),
+              tooltip: 'Update all M3U',
+              onPressed: () => _updateAllM3u(context, ref),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.add, size: 28),
             tooltip: 'Add Provider',
@@ -81,6 +88,50 @@ class ProvidersScreen extends ConsumerWidget {
     ),
     ),
     );
+  }
+
+  /// Refresh every M3U provider at once, showing progress and a summary.
+  Future<void> _updateAllM3u(BuildContext context, WidgetRef ref) async {
+    final providers = await ref.read(databaseProvider).getAllProviders();
+    final m3uCount = providers.where((p) => p.type == 'm3u').length;
+    if (!context.mounted) return;
+    if (m3uCount == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No M3U providers to update')),
+      );
+      return;
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('Updating $m3uCount M3U provider(s)...'),
+        duration: const Duration(seconds: 30),
+      ),
+    );
+
+    final manager = ref.read(providerManagerProvider);
+    try {
+      final results = await manager.refreshAllM3uProviders();
+      final succeeded = results.values.where((c) => c >= 0).length;
+      final failed = results.length - succeeded;
+      final total = results.values.where((c) => c >= 0).fold<int>(0, (a, b) => a + b);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            failed == 0
+                ? 'Updated $succeeded provider(s) — $total channels'
+                : 'Updated $succeeded, $failed failed — $total channels',
+          ),
+        ),
+      );
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(content: Text('Update all failed: $e')),
+      );
+    }
   }
 }
 

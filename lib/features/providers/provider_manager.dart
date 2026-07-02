@@ -160,6 +160,25 @@ class ProviderManager {
     return channels.length;
   }
 
+  /// Refresh every M3U provider in one pass. Returns a per-provider result
+  /// map (provider name → channel count, or -1 on failure) so the UI can
+  /// summarize what happened. Xtream providers are skipped.
+  Future<Map<String, int>> refreshAllM3uProviders() async {
+    final providers = await _db.getAllProviders();
+    final m3uProviders = providers.where((p) => p.type == 'm3u').toList();
+    final results = <String, int>{};
+    for (final provider in m3uProviders) {
+      try {
+        final count = await refreshProvider(provider.id);
+        results[provider.name] = count;
+      } catch (e) {
+        debugPrint('[M3U] Refresh-all failed for ${provider.name}: $e');
+        results[provider.name] = -1;
+      }
+    }
+    return results;
+  }
+
   Future<List<Channel>> _refreshM3u(db.Provider provider) async {
     final source = provider.url!;
     final isRemote =
