@@ -8,13 +8,6 @@ import '../../core/fuzzy_match.dart';
 import '../../data/datasources/local/database.dart' as db;
 import '../providers/provider_manager.dart';
 
-/// CJK high-definition qualifiers stripped before EPG matching so e.g. a
-/// channel "CCTV5" matches an EPG entry "CCTV-5高清".
-final _hdTermsRe = RegExp(r'全高清|超高清|高清');
-
-/// Lowercased, HD-stripped key for EPG name/id matching.
-String _epgKey(String s) => s.toLowerCase().replaceAll(_hdTermsRe, '').trim();
-
 /// EPG program guide — horizontal timeline grid view.
 class GuideScreen extends ConsumerStatefulWidget {
   const GuideScreen({super.key});
@@ -39,11 +32,7 @@ class _GuideScreenState extends ConsumerState<GuideScreen> {
 
   // EPG mapping data (loaded once)
   Map<String, String> _epgMappings = {};
-  /// Raw XMLTV channel id / display name (lowercased) → prefixed EPG channel id
-  /// (`${sourceId}_${channelId}`), used to resolve channels lacking an explicit
-  /// mapping. Programmes are stored under the prefixed id, so lookups must
-  /// return that — not the raw tvg-id.
-  Map<String, String> _rawToPrefixed = {};
+  Set<String> _validEpgChannelIds = {};
   bool _mappingsLoaded = false;
 
   @override
@@ -71,31 +60,11 @@ class _GuideScreenState extends ConsumerState<GuideScreen> {
     final mappings = await database.getAllMappings();
     final epgSources = await database.getAllEpgSources();
     final currentSourceIds = epgSources.map((s) => s.id).toSet();
-    // Prefer EPG channels that actually have programme data when the same raw
-    // id / name appears in multiple sources, so we don't resolve to an empty
-    // (no-guide) EPG channel.
-    final programmeIds = await database.getEpgChannelIdsWithProgrammes();
-    void put(Map<String, String> m, String key, String id) {
-      final existing = m[key];
-      if (existing == null) {
-        m[key] = id;
-        return;
-      }
-      if (programmeIds.contains(id) && !programmeIds.contains(existing)) {
-        m[key] = id;
-      }
-    }
-
     final validIds = <String>{};
-    final rawToPrefixed = <String, String>{};
     for (final src in epgSources) {
       final chs = await database.getEpgChannelsForSource(src.id);
       for (final ch in chs) {
         validIds.add(ch.id);
-        // ch.id is the prefixed id; ch.channelId is the raw XMLTV id.
-        put(rawToPrefixed, _epgKey(ch.channelId), ch.id);
-        final name = _epgKey(ch.displayName);
-        if (name.isNotEmpty) put(rawToPrefixed, name, ch.id);
       }
     }
     // Resolve mappings — handle stale source IDs from deleted/re-created sources
@@ -116,38 +85,20 @@ class _GuideScreenState extends ConsumerState<GuideScreen> {
     if (!mounted) return;
     setState(() {
       _epgMappings = epgMap;
-      _rawToPrefixed = rawToPrefixed;
+      _validEpgChannelIds = validIds;
       _mappingsLoaded = true;
     });
   }
 
-  /// Resolve a channel to its (prefixed) EPG channel ID for programme lookup.
+  /// Resolve a channel to its EPG channel ID for programme lookup.
   String? _resolveEpgId(db.Channel channel) {
-    // 1. Explicit user/auto mapping.
     final mapped = _epgMappings[channel.id];
     if (mapped != null && mapped.isNotEmpty) return mapped;
-
-    // 2. tvg-id → prefixed EPG channel id.
-    final tvgId = channel.tvgId;
-    if (tvgId != null && tvgId.isNotEmpty) {
-      final byId = _rawToPrefixed[_epgKey(tvgId)];
-      if (byId != null) return byId;
+    if (channel.tvgId != null &&
+        channel.tvgId!.isNotEmpty &&
+        _validEpgChannelIds.contains(channel.tvgId)) {
+      return channel.tvgId!;
     }
-
-    // 3. tvg-name → prefixed EPG channel id.
-    final tvgName = channel.tvgName;
-    if (tvgName != null && tvgName.isNotEmpty) {
-      final byName = _rawToPrefixed[_epgKey(tvgName)];
-      if (byName != null) return byName;
-    }
-
-    // 4. Display name → prefixed EPG channel id.
-    final name = _epgKey(channel.name);
-    if (name.isNotEmpty) {
-      final byName = _rawToPrefixed[name];
-      if (byName != null) return byName;
-    }
-
     return null;
   }
 
@@ -476,7 +427,6 @@ class _ChannelGuideRowState extends State<_ChannelGuideRow> {
                       Padding(
                         padding: const EdgeInsets.only(right: 6),
                         child: Image.network(widget.channelLogo!, width: 24, height: 24,
-                          cacheWidth: 96, fit: BoxFit.contain,
                           errorBuilder: (_, __, ___) => const Icon(Icons.tv, size: 18, color: Colors.white24)),
                       ),
                     Expanded(
