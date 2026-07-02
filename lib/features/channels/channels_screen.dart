@@ -292,6 +292,20 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         .trim();
   }
 
+  /// Invisible / zero-width characters that can differ between how a playlist
+  /// is saved on one platform vs another (BOM, zero-width spaces, NBSP) and
+  /// silently break exact-string EPG id matching.
+  static final _epgInvisibleChars = RegExp(
+    r'[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00A0]',
+  );
+
+  /// Canonical key for exact tvg-id / tvg-name ↔ XMLTV channel-id matching:
+  /// lowercased, invisible chars stripped, trimmed. Applied on BOTH sides so a
+  /// stray BOM/zero-width/NBSP (e.g. from a differently-saved playlist) can't
+  /// make an otherwise-identical id fail to match on one platform.
+  static String _epgIdKey(String s) =>
+      s.toLowerCase().replaceAll(_epgInvisibleChars, '').trim();
+
   /// Normalize a channel/EPG display name for fuzzy EPG matching.
   /// Strips country tags, quality tags, provider prefixes, call signs in parens.
   static String _normalizeForEpgMatch(String name) {
@@ -684,7 +698,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       final chs = await database.getEpgChannelsForSource(src.id);
       for (final ch in chs) {
         validIds.add(ch.id);
-        rawToPrefixed[ch.channelId.toLowerCase()] = ch.id;
+        rawToPrefixed[_epgIdKey(ch.channelId)] = ch.id;
         final normName = _normalizeForEpgMatch(ch.displayName);
         if (normName.isNotEmpty) epgNameToId[normName] = ch.id;
         // Index by call sign extracted from channelId (e.g. WABC.us → WABC)
@@ -746,11 +760,11 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       }
       // tvg-name first (preferred when present), then tvg-id.
       if (c.tvgName != null && c.tvgName!.isNotEmpty) {
-        final prefixed = rawToPrefixed[c.tvgName!.toLowerCase()];
+        final prefixed = rawToPrefixed[_epgIdKey(c.tvgName!)];
         if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
       }
       if (c.tvgId != null && c.tvgId!.isNotEmpty) {
-        final prefixed = rawToPrefixed[c.tvgId!.toLowerCase()];
+        final prefixed = rawToPrefixed[_epgIdKey(c.tvgId!)];
         if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
       }
       // Fallback: match by normalized channel name
@@ -1090,12 +1104,12 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
     // 1. tvg-name → XMLTV channel id (use tvg-name first when it's set).
     if (channel.tvgName != null && channel.tvgName!.isNotEmpty) {
-      final prefixed = _rawToPrefixedEpg[channel.tvgName!.toLowerCase()];
+      final prefixed = _rawToPrefixedEpg[_epgIdKey(channel.tvgName!)];
       if (prefixed != null) return prefixed;
     }
     // 2. tvg-id → XMLTV channel id (fallback when tvg-name is empty/unmatched).
     if (channel.tvgId != null && channel.tvgId!.isNotEmpty) {
-      final prefixed = _rawToPrefixedEpg[channel.tvgId!.toLowerCase()];
+      final prefixed = _rawToPrefixedEpg[_epgIdKey(channel.tvgId!)];
       if (prefixed != null) return prefixed;
     }
     // 3. Fallback: normalized channel name against EPG display names.

@@ -52,13 +52,26 @@ class EpgRefreshService {
       final bytes = response.data!;
       debugPrint('[EPG] Downloaded ${bytes.length} bytes');
 
-      // Decompress + parse in background isolate to avoid ANR
+      // Only keep programmes for the recent-past .. next-2-days window. The
+      // filtering happens INSIDE the isolate (see _decompressAndParse) so a
+      // huge XMLTV doesn't ship hundreds of thousands of programmes back across
+      // the isolate boundary and exhaust memory on iOS.
+      final now = DateTime.now();
+      final cutoffStart = now.subtract(const Duration(hours: 6));
+      final cutoffEnd = now.add(const Duration(days: 2));
+
+      // Decompress + parse + filter in background isolate to avoid ANR / OOM
       final result = await compute(
         _decompressAndParse,
-        _DecompressParseArgs(bytes, sourceId),
+        _DecompressParseArgs(
+          bytes,
+          sourceId,
+          cutoffStart.millisecondsSinceEpoch,
+          cutoffEnd.millisecondsSinceEpoch,
+        ),
       );
       debugPrint(
-        '[EPG] Parsed ${result.channels.length} channels, ${result.programmes.length} programmes',
+        '[EPG] Parsed ${result.channels.length} channels, ${result.programmes.length} programmes (windowed)',
       );
 
       // Store channels
@@ -73,20 +86,7 @@ class EpgRefreshService {
       }).toList();
       await _db.upsertEpgChannels(channelCompanions);
 
-      // Only keep programmes for today and next 2 days (reduces DB writes by ~80%)
-      final now = DateTime.now();
-      final cutoffStart = now.subtract(const Duration(hours: 6));
-      final cutoffEnd = now.add(const Duration(days: 2));
-
-      final filteredProgrammes = result.programmes
-          .where(
-            (p) => p.stop.isAfter(cutoffStart) && p.start.isBefore(cutoffEnd),
-          )
-          .toList();
-
-      debugPrint(
-        '[EPG] Keeping ${filteredProgrammes.length} of ${result.programmes.length} programmes (next 2 days)',
-      );
+      final filteredProgrammes = result.programmes;
 
       // Delete old programmes for this source, then insert filtered ones
       await _db.deleteEpgProgrammesForSource(sourceId);
@@ -193,10 +193,24 @@ final epgRefreshServiceProvider = Provider<EpgRefreshService>((ref) {
 class _DecompressParseArgs {
   final List<int> bytes;
   final String sourceId;
-  const _DecompressParseArgs(this.bytes, this.sourceId);
+  final int cutoffStartMs;
+  final int cutoffEndMs;
+  const _DecompressParseArgs(
+    this.bytes,
+    this.sourceId,
+    this.cutoffStartMs,
+    this.cutoffEndMs,
+  );
 }
 
-/// Top-level function for compute() — runs decompression + XML parsing off the main thread.
+/// Top-level function for compute() — runs decompression + XML parsing off the
+/// main thread, AND filters programmes to the keep-window inside the isolate.
+///
+/// Filtering here (rather than after the isolate returns) is critical for
+/// low-memory devices like iOS: a full XMLTV can hold hundreds of thousands of
+/// programmes, and serializing all of them back across the isolate boundary can
+/// exhaust memory and get the app killed — leaving channels stored but no
+/// programmes ("No EPG data"). Returning only the ~kept window avoids that.
 XmltvResult _decompressAndParse(_DecompressParseArgs args) {
   List<int> decompressed;
   try {
@@ -205,5 +219,12 @@ XmltvResult _decompressAndParse(_DecompressParseArgs args) {
     decompressed = args.bytes;
   }
   final xmlContent = utf8.decode(decompressed, allowMalformed: true);
-  return XmltvParser().parse(xmlContent, sourceId: args.sourceId);
+  final result = XmltvParser().parse(xmlContent, sourceId: args.sourceId);
+
+  final cutoffStart = DateTime.fromMillisecondsSinceEpoch(args.cutoffStartMs);
+  final cutoffEnd = DateTime.fromMillisecondsSinceEpoch(args.cutoffEndMs);
+  final filtered = result.programmes
+      .where((p) => p.stop.isAfter(cutoffStart) && p.start.isBefore(cutoffEnd))
+      .toList();
+  return XmltvResult(channels: result.channels, programmes: filtered);
 }
