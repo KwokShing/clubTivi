@@ -851,6 +851,11 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         final prefixed = rawToPrefixed[_epgIdKey(c.tvgId!)];
         if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
       }
+      // Display name (after-comma channel name) → XMLTV channel id.
+      if (c.name.isNotEmpty) {
+        final prefixed = rawToPrefixed[_epgIdKey(c.name)];
+        if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
+      }
       // Fallback: match by normalized channel name
       final normName = _normalizeForEpgMatch(c.name);
       if (normName.isNotEmpty) {
@@ -1201,13 +1206,21 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       final prefixed = _rawToPrefixedEpg[_epgIdKey(channel.tvgId!)];
       if (prefixed != null) return prefixed;
     }
-    // 3. Fallback: normalized channel name against EPG display names.
+    // 3. Display name (text after the last comma in #EXTINF) → XMLTV channel
+    // id. Handles playlists whose tvg-name differs from the channel name but
+    // whose channel name equals the EPG channel id (e.g. tvg-name="NOW新闻",
+    // name="NOW新闻台").
+    if (channel.name.isNotEmpty) {
+      final prefixed = _rawToPrefixedEpg[_epgIdKey(channel.name)];
+      if (prefixed != null) return prefixed;
+    }
+    // 4. Fallback: normalized channel name against EPG display names.
     final normName = _normalizeForEpgMatch(channel.name);
     if (normName.isNotEmpty) {
       final byName = _epgNameToId[normName];
       if (byName != null) return byName;
     }
-    // 4. Fallback: broadcast call sign (WABC, WCBS, etc.).
+    // 5. Fallback: broadcast call sign (WABC, WCBS, etc.).
     final callSign = _extractCallSign(channel.name, channel.tvgId);
     if (callSign != null) {
       final byCs = _epgCallSignToId[callSign];
@@ -2944,7 +2957,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                 ? GestureDetector(
                                     onTap: () {
                                       _sidebarSearchController.clear();
-                                      setState(() => _sidebarSearchQuery = '');
+                                      setState(() {
+                                        _sidebarSearchQuery = '';
+                                        _applyFilters();
+                                      });
                                     },
                                     child: const Icon(
                                       Icons.close_rounded,
