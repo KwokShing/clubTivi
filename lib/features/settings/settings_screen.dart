@@ -289,6 +289,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   children: [
                     _UserAgentTile(),
                     _BufferSizeTile(),
+                    _ShowStreamUrlTile(),
                   ],
                 ),
                 _SettingsSection(
@@ -1452,6 +1453,45 @@ class _TimeFormatTileState extends State<_TimeFormatTile> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('use_24_hour_time', value);
         setState(() => _use24Hour = value);
+      },
+    );
+  }
+}
+
+/// Toggle to show the current channel's stream URL during playback.
+class _ShowStreamUrlTile extends StatefulWidget {
+  @override
+  State<_ShowStreamUrlTile> createState() => _ShowStreamUrlTileState();
+}
+
+class _ShowStreamUrlTileState extends State<_ShowStreamUrlTile> {
+  bool _enabled = false;
+  // Shared prefs key — the player reads the same string.
+  static const _key = 'show_stream_url';
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      if (mounted) {
+        setState(() => _enabled = prefs.getBool(_key) ?? false);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      secondary: const Icon(Icons.link_rounded),
+      title: const Text('Show Stream URL'),
+      subtitle: const Text(
+        'Display the current channel URL during playback',
+      ),
+      value: _enabled,
+      onChanged: (value) async {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(_key, value);
+        setState(() => _enabled = value);
       },
     );
   }

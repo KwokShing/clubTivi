@@ -37,6 +37,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   bool _initialLoadDone = false;
   String _loadStatus = '';
   bool _epgLoading = false;
+  // When enabled in Settings, show the current stream URL under the preview.
+  bool _showStreamUrl = false;
   List<db.Channel> _allChannels = [];
   List<db.Channel> _filteredChannels = [];
   List<String> _groups = [];
@@ -173,6 +175,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _loadChannels();
     _ensureEpgSources();
     _loadSearchHistory();
+    _loadShowStreamUrl();
     // Resolve missing logos on startup (in background)
     ref
         .read(providerManagerProvider)
@@ -221,6 +224,69 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _nowPlayingTimer = Timer.periodic(
       const Duration(seconds: 60),
       (_) => _refreshNowPlaying(),
+    );
+  }
+
+  Future<void> _loadShowStreamUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() => _showStreamUrl = prefs.getBool('show_stream_url') ?? false);
+    }
+  }
+
+  /// Compact, copyable stream-URL pill shown under the inline preview when the
+  /// "Show Stream URL" setting is on. Single line, ellipsized; tap to copy.
+  Widget _buildInlineUrlBar(String? url) {
+    if (!_showStreamUrl || url == null || url.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () {
+            Clipboard.setData(ClipboardData(text: url));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Stream URL copied'),
+                duration: Duration(seconds: 2),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white12, width: 0.5),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.link_rounded, size: 14, color: Colors.white54),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.copy_rounded, size: 14, color: Colors.white54),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -2049,16 +2115,23 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
     if (isNarrow) {
       // Narrow screen (iOS portrait): video fills full width, height adapts to 16:9
-      return Padding(
-        padding: EdgeInsets.zero,
-        child: AspectRatio(
-          aspectRatio: 16 / 9,
-          child: _buildVideoContainer(playerService),
-        ),
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AspectRatio(
+            aspectRatio: 16 / 9,
+            child: _buildVideoContainer(playerService),
+          ),
+          if (_showStreamUrl && _previewChannel != null)
+            _buildInlineUrlBar(_previewChannel!.streamUrl),
+        ],
       );
     }
 
-    return SizedBox(
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
       height: 200,
       child: Padding(
         padding: const EdgeInsets.only(left: 16, right: 16, top: 4),
@@ -2401,6 +2474,16 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
           ],
         ),
       ),
+        ),
+        if (_showStreamUrl && _previewChannel != null)
+          Padding(
+            padding: const EdgeInsets.only(left: 16, right: 16, bottom: 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _buildInlineUrlBar(_previewChannel!.streamUrl),
+            ),
+          ),
+      ],
     );
   }
 

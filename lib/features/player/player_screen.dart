@@ -51,6 +51,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _showChannelList = false;
   Offset? _lastMousePosition;
   bool _isFavorite = false;
+  // When enabled in Settings, show the current stream URL over the video.
+  bool _showStreamUrl = false;
 
   // Channel switching state
   late int _channelIndex;
@@ -106,6 +108,74 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _startPlayback();
     _loadEpgInfo();
     _loadFavoriteState();
+    _loadShowStreamUrl();
+  }
+
+  Future<void> _loadShowStreamUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() => _showStreamUrl = prefs.getBool('show_stream_url') ?? false);
+    }
+  }
+
+  void _copyStreamUrl(String url) {
+    Clipboard.setData(ClipboardData(text: url));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Stream URL copied'),
+        duration: Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  /// Compact, copyable stream-URL pill shown over the video. Single line,
+  /// ellipsized (URLs are long), with a copy button; tapping anywhere copies.
+  Widget _buildStreamUrlBar(String? url) {
+    if (url == null || url.isEmpty) return const SizedBox.shrink();
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 720),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => _copyStreamUrl(url),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.7),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white24, width: 0.5),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.link_rounded, size: 15, color: Colors.white54),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Icon(
+                  Icons.copy_rounded,
+                  size: 15,
+                  color: Colors.white54,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _loadFavoriteState() async {
@@ -728,6 +798,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   onChannelList: () =>
                       setState(() => _showChannelList = !_showChannelList),
                 ),
+
+                // Stream URL bar (enabled via Settings → Show Stream URL).
+                // Shown with the controls, above the control bar; tap to copy.
+                if (_showOverlay && _showStreamUrl)
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    bottom: 96,
+                    child: Center(
+                      child: _buildStreamUrlBar(playerService.currentUrl),
+                    ),
+                  ),
 
                 // Channel info overlay (top, shown alongside control bar)
                 if (_showOverlay) ...[
