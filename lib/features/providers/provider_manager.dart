@@ -46,6 +46,45 @@ class ProviderManager {
     await refreshProvider(id);
   }
 
+  /// Provider id that holds user-imported single-URL streams.
+  static const customProviderId = 'custom_streams';
+
+  /// Import a single stream URL as a channel under the "My Streams" provider,
+  /// creating that provider on first use. Returns the new channel id.
+  ///
+  /// This is a "custom" provider type, so refreshProvider is a no-op for it —
+  /// the manually-added channels are never pruned by a source re-import.
+  Future<String> addSingleChannel({
+    required String name,
+    required String url,
+    String? logoUrl,
+  }) async {
+    final existing = await _db.getAllProviders();
+    if (!existing.any((p) => p.id == customProviderId)) {
+      await _db.upsertProvider(
+        db.ProvidersCompanion.insert(
+          id: customProviderId,
+          name: 'My Streams',
+          type: 'custom',
+        ),
+      );
+    }
+    final channelId = 'custom_${DateTime.now().microsecondsSinceEpoch}';
+    final trimmedName = name.trim();
+    await _db.upsertChannels([
+      db.ChannelsCompanion.insert(
+        id: channelId,
+        providerId: customProviderId,
+        name: trimmedName.isEmpty ? url : trimmedName,
+        tvgLogo: Value(logoUrl),
+        groupTitle: const Value('My Streams'),
+        streamUrl: url,
+        streamType: const Value('live'),
+      ),
+    ]);
+    return channelId;
+  }
+
   /// Update an existing M3U provider's name and/or source (URL or file path),
   /// then re-import its channels. Old channels are cleared first so a changed
   /// source doesn't leave stale entries behind. Returns the channel count.

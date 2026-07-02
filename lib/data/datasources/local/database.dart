@@ -90,6 +90,10 @@ class AppDatabase extends _$AppDatabase {
     await (delete(providers)..where((t) => t.id.equals(id))).go();
   }
 
+  /// Delete a single channel by id (used for user-imported custom streams).
+  Future<void> deleteChannel(String id) =>
+      (delete(channels)..where((t) => t.id.equals(id))).go();
+
   /// Delete all channels belonging to a provider (without removing the
   /// provider itself). Used when re-importing from a changed source.
   Future<void> deleteChannelsForProvider(String providerId) =>

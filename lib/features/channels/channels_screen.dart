@@ -3254,7 +3254,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
           indent: 0,
         ),
         _buildTreeItem(
-          'Play URL',
+          'Play / Add URL',
           'action:play_url',
           Icons.link_rounded,
           indent: 0,
@@ -3574,8 +3574,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   }
 
   Future<void> _playUrlStream() async {
-    final controller = TextEditingController();
-    final url = await showDialog<String>(
+    final urlController = TextEditingController();
+    final nameController = TextEditingController();
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
@@ -3585,18 +3586,38 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
               duration: const Duration(milliseconds: 200),
               padding: EdgeInsets.only(bottom: bottomInset),
               child: AlertDialog(
-                title: const Text('Play Network Stream'),
+                title: const Text('Play or Add Stream'),
                 content: SizedBox(
                   width: 500,
-                  child: TextField(
-                    controller: controller,
-                    autofocus: true,
-                    keyboardType: TextInputType.url,
-                    decoration: const InputDecoration(
-                      hintText: 'http:// or rtsp:// stream URL',
-                      isDense: true,
-                    ),
-                    onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: nameController,
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(
+                          labelText: 'Channel name (optional)',
+                          hintText: 'e.g. My Sports Channel',
+                          isDense: true,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: urlController,
+                        autofocus: true,
+                        keyboardType: TextInputType.url,
+                        decoration: const InputDecoration(
+                          labelText: 'Stream URL',
+                          hintText: 'http:// or rtsp:// stream URL',
+                          isDense: true,
+                        ),
+                        onSubmitted: (v) => Navigator.pop(ctx, {
+                          'url': v.trim(),
+                          'name': nameController.text.trim(),
+                          'save': false,
+                        }),
+                      ),
+                    ],
                   ),
                 ),
                 actions: [
@@ -3604,8 +3625,22 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                     onPressed: () => Navigator.pop(ctx),
                     child: const Text('Cancel'),
                   ),
+                  // Import: persist the URL as a channel under "My Streams".
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, {
+                      'url': urlController.text.trim(),
+                      'name': nameController.text.trim(),
+                      'save': true,
+                    }),
+                    child: const Text('Save'),
+                  ),
+                  // One-off playback without saving.
                   FilledButton(
-                    onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+                    onPressed: () => Navigator.pop(ctx, {
+                      'url': urlController.text.trim(),
+                      'name': nameController.text.trim(),
+                      'save': false,
+                    }),
                     child: const Text('Play'),
                   ),
                 ],
@@ -3615,10 +3650,69 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         );
       },
     );
-    if (url != null && url.isNotEmpty && mounted) {
-      final playerService = ref.read(playerServiceProvider);
-      await playerService.play(url);
-      if (mounted) context.push('/player');
+    if (result == null || !mounted) return;
+    final url = (result['url'] as String).trim();
+    if (url.isEmpty) return;
+    final name = (result['name'] as String).trim();
+    final save = result['save'] as bool;
+
+    if (save) {
+      // Import only — persist to "My Streams"; don't play or go fullscreen.
+      try {
+        await ref
+            .read(providerManagerProvider)
+            .addSingleChannel(name: name, url: url);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Added to "My Streams"')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to add: $e')),
+          );
+        }
+      }
+      return;
+    }
+
+    // Play one-off in the inline (small-screen) preview, not fullscreen.
+    _playTransientUrl(url, name);
+  }
+
+  /// Play a one-off URL in the inline preview using a transient channel, so it
+  /// behaves like selecting a channel (small-screen) rather than fullscreen.
+  void _playTransientUrl(String url, String name) {
+    final channel = db.Channel(
+      id: 'oneoff_${DateTime.now().microsecondsSinceEpoch}',
+      providerId: 'oneoff',
+      name: name.isEmpty ? url : name,
+      streamUrl: url,
+      streamType: 'live',
+      favorite: false,
+      hidden: false,
+      sortOrder: 0,
+    );
+    final playerService = ref.read(playerServiceProvider);
+    playerService.play(
+      url,
+      channelId: channel.id,
+      channelName: channel.name,
+    );
+    setState(() {
+      _selectedIndex = -1;
+      _previewChannel = channel;
+    });
+  }
+
+  /// Delete a user-imported single-URL channel ("My Streams") immediately.
+  Future<void> _deleteCustomChannel(db.Channel channel) async {
+    final database = ref.read(databaseProvider);
+    await database.deleteChannel(channel.id);
+    if (_previewChannel?.id == channel.id) {
+      ref.read(playerServiceProvider).stop();
+      if (mounted) setState(() => _previewChannel = null);
     }
   }
 
@@ -4187,6 +4281,24 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                               ),
                               tooltip: 'Show schedule',
                               onPressed: () => _showChannelSchedule(channel),
+                            ),
+                          // Delete button for imported single-URL channels.
+                          if (channel.providerId ==
+                              ProviderManager.customProviderId)
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 32,
+                                minHeight: 32,
+                              ),
+                              icon: const Icon(
+                                Icons.delete_outline_rounded,
+                                color: Colors.redAccent,
+                                size: 18,
+                              ),
+                              tooltip: 'Delete',
+                              onPressed: () => _deleteCustomChannel(channel),
                             ),
                           // Favorite indicator
                           if (isFavorited)
