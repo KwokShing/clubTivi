@@ -1220,7 +1220,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _guideIdleTimer = Timer(const Duration(seconds: 10), () {
       if (!mounted || !_guideScrollController.hasClients) return;
       final now = DateTime.now();
-      // Scroll to 30 minutes before now
+      // Return to the default view: ~30 minutes before "now" at the left edge.
       final targetMin = now.difference(dayStart).inMinutes - 30;
       final target = (targetMin * _pixelsPerMinute).clamp(
         0.0,
@@ -5790,13 +5790,11 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     }
 
     final database = ref.read(databaseProvider);
-    final today = DateTime.now();
+    // Timeline spans a few hours of past (reachable by dragging left) up to a
+    // day of future, so there's always enough width to scroll the current time
+    // to the left edge (the default view).
     final dayStart = DateTime.now().subtract(const Duration(hours: 3));
-    final dayEnd = DateTime(
-      today.year,
-      today.month,
-      today.day,
-    ).add(const Duration(days: 1));
+    final dayEnd = DateTime.now().add(const Duration(hours: 24));
 
     final totalMinutes = dayEnd.difference(dayStart).inMinutes;
     final totalWidth = totalMinutes * _pixelsPerMinute;
@@ -5807,7 +5805,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
           _guideScrollController.position.pixels == 0.0) {
         final now = DateTime.now();
         final nowMinFromStart = now.difference(dayStart).inMinutes;
-        final target = (nowMinFromStart * _pixelsPerMinute - 100).clamp(
+        // Default view: keep ~30 minutes before "now" visible on the left so
+        // the currently-airing programme isn't clipped; further past is
+        // reachable by dragging left.
+        final target = ((nowMinFromStart - 30) * _pixelsPerMinute).clamp(
           0.0,
           _guideScrollController.position.maxScrollExtent,
         );
