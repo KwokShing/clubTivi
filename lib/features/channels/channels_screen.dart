@@ -117,6 +117,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   Timer? _epgReindexTimer;
   // Debounce timer for lazy logo resolution after the channel list settles.
   Timer? _logoResolveTimer;
+  // Debounce timer for refreshing now-playing when the visible list changes.
+  Timer? _nowPlayingDebounce;
   // Track which providers' channels have been loaded into _allChannels
   final Set<String> _loadedProviders = {};
   // Favorite lists state
@@ -407,6 +409,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _longPressTimer?.cancel();
     _epgReindexTimer?.cancel();
     _logoResolveTimer?.cancel();
+    _nowPlayingDebounce?.cancel();
     _focusNode.dispose();
     super.dispose();
   }
@@ -918,6 +921,18 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     if (_selectedIndex >= _filteredChannels.length) {
       _selectedIndex = _filteredChannels.isEmpty ? -1 : 0;
     }
+    // The visible list changed (group/search switch) → refresh now-playing for
+    // it right away instead of waiting for the 60s timer. Debounced so rapid
+    // changes only fire one DB query once the list settles.
+    _scheduleNowPlayingRefresh();
+  }
+
+  /// Debounced now-playing refresh for the current visible list.
+  void _scheduleNowPlayingRefresh() {
+    _nowPlayingDebounce?.cancel();
+    _nowPlayingDebounce = Timer(const Duration(milliseconds: 150), () {
+      if (mounted) _refreshNowPlaying();
+    });
   }
 
   Future<void> _applyFavoriteListFilter(String listId) async {
