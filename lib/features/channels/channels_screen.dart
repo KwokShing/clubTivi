@@ -143,8 +143,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   /// groupId → ordered list of channel IDs
   Map<int, List<String>> _failoverGroupMembers = {};
 
-  /// channelId → list of group memberships (for fast player lookup)
-  Map<String, List<db.FailoverGroupMembership>> _failoverGroupIndex = {};
   final Set<int> _expandedFailoverGroups = {};
 
   // Time format
@@ -184,35 +182,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         .read(providerManagerProvider)
         .resolveAllMissingLogos()
         .catchError((_) {});
-    // Auto-failover toast
-    final ps = ref.read(playerServiceProvider);
-    ps.onFailover = (message) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(message),
-            duration: const Duration(seconds: 3),
-            behavior: SnackBarBehavior.floating,
-            width: 250,
-          ),
-        );
-        // Update channel list selection to reflect the failover target
-        final newId = ps.lastFailoverChannelId;
-        if (newId != null) {
-          final idx = _filteredChannels.indexWhere((c) => c.id == newId);
-          if (idx >= 0 && idx != _selectedIndex) {
-            setState(() {
-              _previousIndex = _selectedIndex;
-              _selectedIndex = idx;
-              _previewChannel = _filteredChannels[idx];
-            });
-            if (_channelListController.hasClients) {
-              _scrollToIndex(idx);
-            }
-          }
-        }
-      }
-    };
     // Watch providers + channels tables. Instead of re-running the heavy
     // staged _loadChannels (which races on overlapping refreshes and doubled
     // the in-memory list, and reset the view back to Favorites), update state
@@ -537,7 +506,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       final members = await database.getFailoverGroupMembers(g.id);
       foGroupMembers[g.id] = members.map((m) => m.channelId).toList();
     }
-    final foGroupIndex = await database.getFailoverGroupIndex();
 
     if (!mounted) return;
     setState(() {
@@ -545,7 +513,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       _groups = allGroupNames.toList();
       _failoverGroups = foGroups;
       _failoverGroupMembers = foGroupMembers;
-      _failoverGroupIndex = foGroupIndex;
       _applyFilters(); // Re-filter to hide grouped channels
     });
 
@@ -1017,23 +984,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       _previousIndex = _selectedIndex;
     }
 
-    // Check if channel belongs to a failover group → pass group URLs
-    final groupMemberships = _failoverGroupIndex[channel.id];
-    List<String>? failoverUrls;
-    if (groupMemberships != null && groupMemberships.isNotEmpty) {
-      final groupId = groupMemberships.first.group.id;
-      final memberIds = _failoverGroupMembers[groupId] ?? [];
-      final channelById = <String, db.Channel>{};
-      for (final c in _allChannels) {
-        channelById[c.id] = c;
-      }
-      failoverUrls = memberIds
-          .map((id) => channelById[id]?.streamUrl)
-          .whereType<String>()
-          .where((url) => url != channel.streamUrl)
-          .toList();
-    }
-
     playerService.play(
       channel.streamUrl,
       channelId: channel.id,
@@ -1042,7 +992,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       channelName: channel.name,
       vanityName: _vanityNames[channel.id],
       originalName: channel.tvgName,
-      failoverGroupUrls: failoverUrls,
     );
     setState(() {
       _selectedIndex = index;
@@ -5041,12 +4990,10 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       final members = await database.getFailoverGroupMembers(g.id);
       foGroupMembers[g.id] = members.map((m) => m.channelId).toList();
     }
-    final foGroupIndex = await database.getFailoverGroupIndex();
     if (!mounted) return;
     setState(() {
       _failoverGroups = foGroups;
       _failoverGroupMembers = foGroupMembers;
-      _failoverGroupIndex = foGroupIndex;
       _applyFilters(); // Re-filter to hide/unhide grouped channels
     });
   }
@@ -5060,11 +5007,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     final target = playChannel ?? members.first;
 
     final playerService = ref.read(playerServiceProvider);
-    // Other members are failover alternatives
-    final altUrls = members
-        .where((c) => c.id != target.id)
-        .map((c) => c.streamUrl)
-        .toList();
 
     playerService.play(
       target.streamUrl,
@@ -5074,7 +5016,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       channelName: target.name,
       vanityName: _vanityNames[target.id],
       originalName: target.tvgName,
-      failoverGroupUrls: altUrls,
     );
 
     // Always update preview — grouped channels are filtered out of

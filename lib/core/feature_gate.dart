@@ -45,9 +45,6 @@ class FeatureGate {
   /// Max EPG sources allowed.
   static int get maxEpgSources => isPro ? 20 : 2;
 
-  /// Whether warm failover (background probing) is available.
-  static bool get warmFailover => isPro;
-
   /// Whether multi-view (multi-stream grid) is available.
   static bool get multiView => true; // Free feature
 
