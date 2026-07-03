@@ -3557,11 +3557,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
-            final bottomInset = MediaQuery.of(ctx).viewInsets.bottom;
-            return AnimatedPadding(
-              duration: const Duration(milliseconds: 200),
-              padding: EdgeInsets.only(bottom: bottomInset),
-              child: AlertDialog(
+            return AlertDialog(
+                scrollable: true,
                 title: const Text('Play or Add Stream'),
                 content: SizedBox(
                   width: 500,
@@ -3620,7 +3617,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                     child: const Text('Play'),
                   ),
                 ],
-              ),
             );
           },
         );
