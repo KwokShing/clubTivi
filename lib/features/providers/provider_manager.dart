@@ -329,6 +329,33 @@ class ProviderManager {
     });
   }
 
+  /// Build an M3U playlist string from a provider's stored channels.
+  ///
+  /// Reconstructs #EXTINF lines with the tvg-* / group-title attributes and
+  /// stream URLs currently held in the database, preserving the saved sort
+  /// order. Suitable for exporting the (possibly edited) playlist to a file.
+  Future<String> buildM3uForProvider(String providerId) async {
+    final channels = await _db.getChannelsForProvider(providerId);
+    final buffer = StringBuffer('#EXTM3U\n');
+    for (final c in channels) {
+      final attrs = StringBuffer();
+      void attr(String key, String? value) {
+        if (value != null && value.isNotEmpty) {
+          // Strip any stray double-quotes so the attribute stays well-formed.
+          attrs.write(' $key="${value.replaceAll('"', '')}"');
+        }
+      }
+
+      attr('tvg-id', c.tvgId);
+      attr('tvg-name', c.tvgName);
+      attr('tvg-logo', c.tvgLogo);
+      attr('group-title', c.groupTitle);
+      buffer.writeln('#EXTINF:-1$attrs,${c.name}');
+      buffer.writeln(c.streamUrl);
+    }
+    return buffer.toString();
+  }
+
   Future<void> deleteProvider(String id) async {
     // Also remove the auto-EPG source for this provider
     try {

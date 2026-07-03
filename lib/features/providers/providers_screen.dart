@@ -1,3 +1,8 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -253,6 +258,12 @@ class _ProviderCard extends ConsumerWidget {
                 tooltip: 'Edit',
                 onPressed: () => showEditProviderDialog(context, provider),
               ),
+            if (!isXtream)
+              IconButton(
+                icon: const Icon(Icons.download_rounded, size: 20),
+                tooltip: 'Export M3U',
+                onPressed: () => _exportM3u(context, ref),
+              ),
             IconButton(
               icon: const Icon(Icons.delete_outline_rounded,
                   size: 20, color: Colors.redAccent),
@@ -304,6 +315,50 @@ class _ProviderCard extends ConsumerWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Refresh failed: $e')),
+      );
+    }
+  }
+
+  /// Export this provider's channels to an .m3u file at a user-chosen location.
+  Future<void> _exportM3u(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final manager = ref.read(providerManagerProvider);
+    try {
+      final content = await manager.buildM3uForProvider(provider.id);
+      final bytes = Uint8List.fromList(utf8.encode(content));
+
+      // Sanitize the provider name into a safe default file name.
+      final safeName = provider.name
+          .replaceAll(RegExp(r'[^\w\-. ]'), '_')
+          .trim()
+          .replaceAll(' ', '_');
+      final fileName = '${safeName.isEmpty ? 'playlist' : safeName}.m3u';
+
+      final outputPath = await FilePicker.platform.saveFile(
+        dialogTitle: 'Export M3U',
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: const ['m3u', 'm3u8'],
+        // On mobile, bytes must be provided; file_picker writes the file.
+        bytes: bytes,
+      );
+
+      if (outputPath == null) return; // user cancelled
+
+      // On desktop, saveFile only returns the chosen path — we write it here.
+      // On mobile, the file was already written from `bytes`, so guard the
+      // write behind a platform check to avoid touching content:// URIs.
+      if (!kIsWeb &&
+          (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+        await File(outputPath).writeAsBytes(bytes);
+      }
+
+      messenger.showSnackBar(
+        SnackBar(content: Text('Exported to $outputPath')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Export failed: $e')),
       );
     }
   }
