@@ -2855,48 +2855,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     );
   }
 
-  /// Extract quality tag (UHD/4K/FHD/HD/SD) from channel name and return a badge widget.
-  Widget? _qualityBadge(String name) {
-    final upper = name.toUpperCase();
-    String? label;
-    Color? color;
-    if (upper.contains('4K') || upper.contains('UHD')) {
-      label = 'UHD';
-      color = const Color(0xFF9B59B6);
-    } else if (upper.contains('FHD') ||
-        upper.contains('FULLHD') ||
-        upper.contains('FULL HD')) {
-      label = 'FHD';
-      color = const Color(0xFF2ECC71);
-    } else if (RegExp(r'\bHD\b').hasMatch(upper)) {
-      label = 'HD';
-      color = const Color(0xFF3498DB);
-    } else if (RegExp(r'\bSD\b').hasMatch(upper)) {
-      label = 'SD';
-      color = const Color(0xFF95A5A6);
-    }
-    if (label == null) return null;
-    return Container(
-      margin: const EdgeInsets.only(left: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-      decoration: BoxDecoration(
-        color: color!.withValues(alpha: 0.25),
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: color.withValues(alpha: 0.6), width: 0.5),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 9,
-          fontWeight: FontWeight.bold,
-          color: color,
-        ),
-      ),
-    );
-  }
-
   Widget _buildSidebar() {
-    final width = _sidebarExpanded ? 188.0 : 44.0;
+    final width = _sidebarExpanded ? 160.0 : 40.0;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       width: width,
@@ -4137,10 +4097,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           },
                     borderRadius: BorderRadius.circular(8),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 8,
-                      ),
+                      padding: const EdgeInsets.fromLTRB(6, 8, 0, 8),
                       decoration: BoxDecoration(
                         color: isMultiSelected
                             ? const Color(0xFF6C5CE7).withValues(alpha: 0.25)
@@ -4212,7 +4169,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                     ),
                             ),
                           ),
-                          const SizedBox(width: 10),
+                          const SizedBox(width: 8),
                           // Channel name + group + now-playing
                           Expanded(
                             child: Column(
@@ -4233,8 +4190,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                         overflow: TextOverflow.ellipsis,
                                       ),
                                     ),
-                                    if (_qualityBadge(channel.name) != null)
-                                      _qualityBadge(channel.name)!,
                                   ],
                                 ),
                                 // Only show the provider/group subtitle for
