@@ -26,6 +26,20 @@ class PlayerService {
   Timer? _bufferTrackTimer;
   StreamSubscription<bool>? _bufferTrackSub;
   StreamSubscription<bool>? _completedSub; // auto-resume on segment end
+  StreamSubscription<Playlist>? _playlistSub; // seamless prefetch top-up
+
+  // ── Seamless playlist prefetch ──────────────────────────────────────────
+  // Plain (non-DASH) streams are opened as a small self-extending playlist of
+  // the same URL with mpv's `prefetch-playlist` enabled: when a segment ends
+  // mpv has already opened the next entry, so it switches over with no reload
+  // hitch — and, because each entry is its own fresh timeline, without the
+  // timestamp-discontinuity rewind that reloading the same timeline caused.
+  // We keep exactly one entry queued ahead by appending a new one each time
+  // mpv advances.
+  bool _playlistPrefetch = false;
+  int _lastPlaylistIndex = 0;
+  int _playlistLength = 0;
+  DateTime _lastPrefetchAppend = DateTime.fromMillisecondsSinceEpoch(0);
 
   // ── Load timeout: fail a stream that never starts within a grace window ──
   static const _loadTimeout = Duration(seconds: 15);
@@ -101,6 +115,14 @@ class PlayerService {
       await _set(np, 'interpolation', 'no');
       await _set(np, 'video-sync', 'audio');
 
+      // ── Seamless segment boundaries ───────────────────────────────────
+      // Open the next playlist entry before the current one ends. For plain
+      // streams we hand mpv a self-extending playlist of the same URL (see
+      // [play]), so this prefetches the next segment and lets mpv switch
+      // across the boundary with no reload gap. No-op for single-Media opens
+      // (e.g. DASH), so it's always safe to leave on.
+      await _set(np, 'prefetch-playlist', 'yes');
+
       // ── Audio normalization (app feature, audio-only) ─────────────────
       // Best-effort: these shape audio output only and never block video.
       await _set(np, 'audio-channels', 'stereo');
@@ -161,8 +183,22 @@ class PlayerService {
       // downgrades to the VOD (large-readahead) tier only if it's actually VOD.
       _isLiveStream = true;
       await _bufferManager.applyForStream(url, this, isLive: true);
-      await player.open(Media(url));
+
+      // Plain streams are opened as a self-extending playlist so mpv can
+      // prefetch the next segment and cross segment boundaries seamlessly
+      // (see [_listenPlaylist]). DASH is one continuous adaptive stream that
+      // never EOFs per segment, so it stays a single Media.
+      _lastPlaylistIndex = 0;
+      _playlistLength = 0;
+      _lastPrefetchAppend = DateTime.fromMillisecondsSinceEpoch(0);
+      _playlistPrefetch = !_isDashUrl(url);
+      if (_playlistPrefetch) {
+        await player.open(Playlist([Media(url), Media(url)]));
+      } else {
+        await player.open(Media(url));
+      }
       await player.setVolume(100.0);
+      _listenPlaylist();
     } catch (e) {
       debugPrint('[Player] Error starting playback: $e');
       return;
@@ -177,6 +213,14 @@ class PlayerService {
     _completedSub?.cancel();
     _completedSub = player.stream.completed.listen((completed) async {
       if (!completed || _currentUrl == null) return;
+      // In playlist-prefetch mode a `completed` while entries are still queued
+      // ahead is a per-entry (segment-boundary) event — mpv advances to the
+      // prefetched next entry on its own, so don't tear the stream down. Only
+      // a completed with no entries left ahead is a genuine end worth
+      // reloading (the queue-drained fallback below).
+      if (_playlistPrefetch && _lastPlaylistIndex < _playlistLength - 1) {
+        return;
+      }
       // For live streams the edge can briefly report completed while the
       // playlist refreshes. ffmpeg reconnect + auto-failover handle real
       // outages, so throttle reloads to avoid a tight reload loop.
@@ -210,6 +254,40 @@ class PlayerService {
     bufferingSeconds = 0;
     startBufferTracking();
     _startLoadTimeout();
+  }
+
+  /// Keep the prefetch playlist topped up. Each time mpv advances to the next
+  /// (already-prefetched) entry, append one more so there's always a segment
+  /// queued ahead. Rate-limited so a dead stream that EOFs instantly can't
+  /// spin into a tight append loop — if that happens the queue drains and the
+  /// `completed` handler takes over as a fallback (reload).
+  void _listenPlaylist() {
+    _playlistSub?.cancel();
+    _playlistSub = player.stream.playlist.listen((pl) {
+      _playlistLength = pl.medias.length;
+      if (!_playlistPrefetch || _currentUrl == null) return;
+      if (pl.index <= _lastPlaylistIndex) return;
+      _lastPlaylistIndex = pl.index;
+      final now = DateTime.now();
+      if (now.difference(_lastPrefetchAppend) <
+          const Duration(milliseconds: 500)) {
+        return;
+      }
+      _lastPrefetchAppend = now;
+      final url = _currentUrl;
+      if (url == null || url.isEmpty) return;
+      player.add(Media(url)).catchError((Object e) {
+        debugPrint('[Player] prefetch append failed: $e');
+      });
+    });
+  }
+
+  /// Whether [url] points at an MPEG-DASH manifest. DASH is a single
+  /// continuous adaptive stream that never EOFs per segment, so it must stay
+  /// a single Media rather than being wrapped in a self-extending playlist.
+  bool _isDashUrl(String url) {
+    final lower = url.toLowerCase();
+    return RegExp(r'\.mpd(\?|$)').hasMatch(lower) || lower.contains('dash');
   }
 
   /// Arm a timeout that stops a stream which never starts playing within
@@ -282,6 +360,9 @@ class PlayerService {
     _bufferTrackTimer = null;
     _completedSub?.cancel();
     _completedSub = null;
+    _playlistSub?.cancel();
+    _playlistSub = null;
+    _playlistPrefetch = false;
     _trackingBuffering = false;
     await player.stop();
     // Clear current-channel tracking so re-selecting the same channel after a
@@ -470,6 +551,7 @@ class PlayerService {
       _tracksSub?.cancel();
       _bufferTrackSub?.cancel();
       _completedSub?.cancel();
+      _playlistSub?.cancel();
       _bufferTrackTimer?.cancel();
       _loadTimeoutTimer?.cancel();
       _loadStartSub?.cancel();
