@@ -171,11 +171,37 @@ class M3uParser {
     return attrs;
   }
 
-  /// Extract the display name (after the last comma in #EXTINF line).
+  /// Extract the display name from an #EXTINF line.
+  ///
+  /// The #EXTINF format is `#EXTINF:<duration> <attributes>,<display-name>`.
+  /// The display name is everything after the *first comma that sits outside
+  /// of any quoted attribute value*. Using the first unquoted comma (instead of
+  /// `lastIndexOf(',')`) means attribute values that themselves contain commas
+  /// — e.g. `tvg-logo="https://.../st,small,600x600,f8f8f8.jpg"` — no longer
+  /// corrupt the parsed name. It also correctly preserves display names that
+  /// legitimately contain commas.
   String _parseDisplayName(String extInf) {
-    final commaIndex = extInf.lastIndexOf(',');
+    final commaIndex = _unquotedCommaIndex(extInf);
     if (commaIndex == -1 || commaIndex == extInf.length - 1) return '';
     return extInf.substring(commaIndex + 1).trim();
+  }
+
+  /// Find the index of the first comma in [line] that is not enclosed in either
+  /// double or single quotes. Returns -1 if there is no such comma.
+  int _unquotedCommaIndex(String line) {
+    var inDouble = false;
+    var inSingle = false;
+    for (var i = 0; i < line.length; i++) {
+      final ch = line[i];
+      if (ch == '"' && !inSingle) {
+        inDouble = !inDouble;
+      } else if (ch == "'" && !inDouble) {
+        inSingle = !inSingle;
+      } else if (ch == ',' && !inDouble && !inSingle) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   StreamType _inferStreamType(Map<String, String> attrs, String url) {

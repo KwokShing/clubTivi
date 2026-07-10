@@ -36,6 +36,40 @@ http://example.com/live/cnn
       expect(cnn.groupTitle, 'News');
     });
 
+    test('parses display name when attribute values contain commas', () {
+      const content = '''#EXTM3U
+#EXTINF:-1 tvg-name="MEATEATER" tvg-logo="https://ih1.redbubble.net/image.1003360281.8693/st,small,507x507-pad,600x600,f8f8f8.jpg" group-title="5",MEATEATER
+http://89.187.179.148:826/anto.j/c9yJDcXyPe/118672
+''';
+
+      final result = parser.parse(content, providerId: 'test-provider');
+
+      expect(result.channelCount, 1);
+      expect(result.hasErrors, false);
+
+      final channel = result.channels[0];
+      expect(channel.name, 'MEATEATER');
+      expect(channel.tvgName, 'MEATEATER');
+      expect(
+        channel.tvgLogo,
+        'https://ih1.redbubble.net/image.1003360281.8693/st,small,507x507-pad,600x600,f8f8f8.jpg',
+      );
+      expect(channel.groupTitle, '5');
+      expect(channel.streamUrl, 'http://89.187.179.148:826/anto.j/c9yJDcXyPe/118672');
+    });
+
+    test('preserves commas that belong to the display name itself', () {
+      const content = '''#EXTM3U
+#EXTINF:-1 tvg-id="movie.1" group-title="VOD",Movie, The Sequel
+http://example.com/movie/1.mp4
+''';
+
+      final result = parser.parse(content, providerId: 'test-provider');
+
+      expect(result.channelCount, 1);
+      expect(result.channels[0].name, 'Movie, The Sequel');
+    });
+
     test('parses channel numbers from tvg-chno', () {
       const content = '''#EXTM3U
 #EXTINF:-1 tvg-id="ABC.us" tvg-chno="7",ABC
