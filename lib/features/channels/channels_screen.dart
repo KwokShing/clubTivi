@@ -48,9 +48,11 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   // _showSearch removed — search bar is always visible in the top navbar
   int _selectedIndex = -1;
   db.Channel? _previewChannel;
-  /// Current/near programmes for the scoped channels (flat list, filtered
-  /// per-channel at lookup time — matches the known-good simple approach).
-  List<db.EpgProgramme> _nowPlaying = [];
+  /// Current/near programmes indexed by EPG channel ID, each list sorted by
+  /// start time. Rebuilt whenever new programmes load via [_setNowPlaying].
+  /// Turns the per-list-item programme lookups from an O(channels × programmes)
+  /// full scan into an O(1) map hit + short per-channel scan.
+  Map<String, List<db.EpgProgramme>> _nowPlayingByEpgId = {};
 
   /// Maps channel ID → mapped EPG channel ID (from epg_mappings table)
   Map<String, String> _epgMappings = {};
@@ -62,7 +64,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       {}; // normalized EPG displayName → prefixed id
   Map<String, String> _epgCallSignToId =
       {}; // call sign (e.g. WABC) → prefixed id
-  bool _showGuideView = true;
+  final bool _showGuideView = true;
 
   /// Use the compact vertical EPG layout (inline now/next + progress + tap to
   /// expand schedule) everywhere except Android TV, whose D-pad-driven
@@ -103,7 +105,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
   // Sidebar state
   bool _sidebarExpanded = true;
-  Set<String> _expandedSections = {'favorites'};
+  final Set<String> _expandedSections = {'favorites'};
   final _sidebarSearchController = TextEditingController();
   final _sidebarFocusNode = FocusScopeNode(debugLabel: 'sidebar');
   final _sidebarAllItemFocusNode = FocusNode(debugLabel: 'sidebar-all');
@@ -339,7 +341,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         : await database.getNowPlaying(epgChannelIds.toList());
     if (!mounted) return;
     setState(() {
-      _nowPlaying = nowPlaying;
+      _setNowPlaying(nowPlaying);
     });
   }
 
@@ -901,7 +903,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
     if (!mounted) return;
     setState(() {
-      _nowPlaying = nowPlaying;
+      _setNowPlaying(nowPlaying);
       _epgMappings = epgMap;
       _rawToPrefixedEpg = rawToPrefixed;
       _epgNameToId = epgNameToId;
@@ -1261,11 +1263,29 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     return '';
   }
 
+  /// Update the current-programme index from a fresh programme list.
+  /// Each bucket is sorted by start time so "current" and "next" lookups are
+  /// a short linear scan instead of a full re-filter of the flat list.
+  void _setNowPlaying(List<db.EpgProgramme> programmes) {
+    final index = <String, List<db.EpgProgramme>>{};
+    for (final p in programmes) {
+      (index[p.epgChannelId] ??= <db.EpgProgramme>[]).add(p);
+    }
+    for (final list in index.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
+    }
+    _nowPlayingByEpgId = index;
+  }
+
   String? _getChannelNowPlaying(db.Channel channel) {
+    final p = _getEpgProgramme(channel);
+    if (p != null) return p.title;
+    // Fall back to the first programme in the bucket (matches the prior
+    // behaviour when no programme strictly contains "now", e.g. sparse EPG).
     final epgId = _getEpgId(channel);
     if (epgId == null) return null;
-    final match = _nowPlaying.where((p) => p.epgChannelId == epgId).toList();
-    return match.isNotEmpty ? match.first.title : null;
+    final list = _nowPlayingByEpgId[epgId];
+    return (list != null && list.isNotEmpty) ? list.first.title : null;
   }
 
   /// Display name for a channel — vanity name if set, otherwise original name.
@@ -1294,13 +1314,14 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   db.EpgProgramme? _getEpgProgramme(db.Channel channel) {
     final epgId = _getEpgId(channel);
     if (epgId == null) return null;
+    final list = _nowPlayingByEpgId[epgId];
+    if (list == null) return null;
     final shift = _epgTimeshifts[channel.id] ?? 0;
     final adjusted = DateTime.now().subtract(Duration(hours: shift));
-    final matches = _nowPlaying.where((p) =>
-        p.epgChannelId == epgId &&
-        !p.start.isAfter(adjusted) &&
-        p.stop.isAfter(adjusted)).toList();
-    return matches.isNotEmpty ? matches.first : null;
+    for (final p in list) {
+      if (!p.start.isAfter(adjusted) && p.stop.isAfter(adjusted)) return p;
+    }
+    return null;
   }
 
   db.EpgProgramme? _getNextProgramme(db.Channel channel) {
@@ -1308,11 +1329,14 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     if (epgId == null) return null;
     final current = _getEpgProgramme(channel);
     if (current == null) return null;
-    final matches = _nowPlaying.where((p) =>
-        p.epgChannelId == epgId &&
-        !p.start.isBefore(current.stop)).toList();
-    matches.sort((a, b) => a.start.compareTo(b.start));
-    return matches.isNotEmpty ? matches.first : null;
+    final list = _nowPlayingByEpgId[epgId];
+    if (list == null) return null;
+    // List is sorted by start, so the first programme starting at/after the
+    // current programme's stop is the next one.
+    for (final p in list) {
+      if (!p.start.isBefore(current.stop)) return p;
+    }
+    return null;
   }
 
   /// Progress fraction (0..1) into the current programme, honoring timeshift.
@@ -5968,6 +5992,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           checkedIds.remove(list.id);
                         }
                         setSheetState(() {});
+                        if (!ctx.mounted) return;
                         resetAutoClose(Navigator.of(ctx));
                       },
                     );
@@ -6115,6 +6140,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                     : ReorderableListView.builder(
                         shrinkWrap: true,
                         itemCount: lists.length,
+                        // ignore: deprecated_member_use
                         onReorder: (oldIdx, newIdx) async {
                           if (newIdx > oldIdx) newIdx--;
                           final item = lists.removeAt(oldIdx);
@@ -6610,9 +6636,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                   final hwPressed = HardwareKeyboard
                                       .instance
                                       .logicalKeysPressed;
-                                  // ignore: deprecated_member_use
-                                  final rawPressed =
-                                      RawKeyboard.instance.keysPressed;
                                   final shiftOrCmd =
                                       hwPressed.contains(
                                         LogicalKeyboardKey.shiftLeft,
@@ -6624,18 +6647,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                         LogicalKeyboardKey.metaLeft,
                                       ) ||
                                       hwPressed.contains(
-                                        LogicalKeyboardKey.metaRight,
-                                      ) ||
-                                      rawPressed.contains(
-                                        LogicalKeyboardKey.shiftLeft,
-                                      ) ||
-                                      rawPressed.contains(
-                                        LogicalKeyboardKey.shiftRight,
-                                      ) ||
-                                      rawPressed.contains(
-                                        LogicalKeyboardKey.metaLeft,
-                                      ) ||
-                                      rawPressed.contains(
                                         LogicalKeyboardKey.metaRight,
                                       );
                                   try {

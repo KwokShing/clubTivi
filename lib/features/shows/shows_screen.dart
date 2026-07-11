@@ -69,7 +69,7 @@ class _ShowsScreenState extends ConsumerState<ShowsScreen> {
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () {
           Future.microtask(() {
-            if (!mounted) return;
+            if (!context.mounted) return;
             if (context.canPop()) {
               context.pop();
             } else {
@@ -349,12 +349,12 @@ class _ShowsScreenState extends ConsumerState<ShowsScreen> {
             ref.read(showSearchQueryProvider.notifier).state = '';
           });
         } else {
+          final router = GoRouter.of(context);
           Future.microtask(() {
-            if (!mounted) return;
-            if (context.canPop()) {
-              context.pop();
+            if (router.canPop()) {
+              router.pop();
             } else {
-              context.go('/');
+              router.go('/');
             }
           });
         }

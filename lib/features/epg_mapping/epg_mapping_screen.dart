@@ -34,8 +34,9 @@ class _EpgMappingScreenState extends ConsumerState<EpgMappingScreen> {
             pf!.unfocus();
             return;
           }
+          final router = GoRouter.of(context);
           Future.microtask(() {
-            context.go('/settings');
+            router.go('/settings');
           });
         },
       },

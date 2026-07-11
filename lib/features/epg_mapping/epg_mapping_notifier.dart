@@ -129,21 +129,6 @@ class EpgMappingNotifier extends StateNotifier<EpgMappingState> {
 
   EpgMappingNotifier(this._db) : super(const EpgMappingState());
 
-  static String _normalizeName(String name) {
-    return name
-        .toLowerCase()
-        .replaceAll(
-          RegExp(r'\b(hd|fhd|shd|sd|4k|uhd)\b', caseSensitive: false),
-          '',
-        )
-        .replaceAll(
-          RegExp(r'(us-?[a-z]*\|?|uk-?[a-z]*\|?|ca-?[a-z]*\|?|mx-?[a-z]*\|?)'),
-          '',
-        )
-        .replaceAll(RegExp(r'[\s|()[\]]+'), ' ')
-        .trim();
-  }
-
   /// Load all channels and their mapping status (scoped to favorites + failover alts).
   Future<void> load() async {
     state = state.copyWith(isLoading: true);

@@ -67,7 +67,6 @@ class M3uParser {
     final idCounts = <String, int>{};
 
     String? currentGroup;
-    int order = 0;
 
     for (var i = 0; i < lines.length; i++) {
       final line = lines[i].trim();
@@ -104,7 +103,6 @@ class M3uParser {
         idCounts: idCounts,
       );
       channels.add(channel);
-      order++;
     }
 
     return M3uResult(channels: channels, errors: errors);

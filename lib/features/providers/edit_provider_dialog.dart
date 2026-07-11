@@ -126,6 +126,7 @@ class _EditProviderPageState extends ConsumerState<_EditProviderPage> {
             return;
           }
           Future.microtask(() {
+            if (!context.mounted) return;
             Navigator.of(context).pop();
           });
         },

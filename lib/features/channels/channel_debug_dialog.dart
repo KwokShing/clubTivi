@@ -7,7 +7,6 @@ import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/datasources/local/database.dart' as db;
-import '../../data/models/channel.dart' hide Provider;
 import '../../data/services/stream_alternatives_service.dart';
 import '../player/player_service.dart';
 
@@ -77,7 +76,6 @@ class _ChannelDebugDialogState extends State<ChannelDebugDialog> {
   Timer? _refreshTimer;
   /// Track which alternatives are accepted (true), rejected (false), or pending (absent).
   final Map<String, bool> _decisions = {};
-  bool _hasChanges = false;
   String? _playingChannelId;
 
   @override
@@ -132,7 +130,7 @@ class _ChannelDebugDialogState extends State<ChannelDebugDialog> {
     // Switch back to original channel if previewing an alternative
     if (_playingChannelId != null) {
       final url = widget.channel.streamUrl;
-      if (url != null && url.isNotEmpty) {
+      if (url.isNotEmpty) {
         widget.playerService.play(url);
       }
     }
@@ -151,7 +149,7 @@ class _ChannelDebugDialogState extends State<ChannelDebugDialog> {
   void _previewAlternative(AlternativeDetail alt) {
     if (_playingChannelId == alt.channel.id) return; // already playing
     final url = alt.channel.streamUrl;
-    if (url == null || url.isEmpty) return;
+    if (url.isEmpty) return;
     widget.playerService.play(url);
     setState(() => _playingChannelId = alt.channel.id);
   }
@@ -160,7 +158,7 @@ class _ChannelDebugDialogState extends State<ChannelDebugDialog> {
   void _playOriginal() {
     if (_playingChannelId == null) return; // already playing original
     final url = widget.channel.streamUrl;
-    if (url == null || url.isEmpty) return;
+    if (url.isEmpty) return;
     widget.playerService.play(url);
     setState(() => _playingChannelId = null);
   }
@@ -877,7 +875,7 @@ class _ChannelDebugOverlayState extends State<ChannelDebugOverlay> {
     setState(() {
       _videoCodec = results[0] ?? '—';
       _audioCodec = results[1] ?? '—';
-      _resolution = (w != null && h != null) ? '${w}×$h' : '—';
+      _resolution = (w != null && h != null) ? '$w×$h' : '—';
       _fps = _formatFps(results[4]);
       _videoBitrate = vBitrate;
       _audioBitrate = aBitrate;

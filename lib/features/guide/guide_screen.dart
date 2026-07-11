@@ -27,9 +27,6 @@ class _GuideScreenState extends ConsumerState<GuideScreen> {
   /// Pixels per minute for the timeline.
   static const _pixelsPerMinute = 4.0;
 
-  /// Total width of the 24-hour timeline.
-  static double get _totalWidth => 24 * 60 * _pixelsPerMinute;
-
   // EPG mapping data (loaded once)
   Map<String, String> _epgMappings = {};
   Set<String> _validEpgChannelIds = {};

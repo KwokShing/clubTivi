@@ -53,19 +53,23 @@ class _CountdownSnackContentState extends State<_CountdownSnackContent>
       children: [
         Expanded(child: Text(widget.message)),
         const SizedBox(width: 12),
-        SizedBox(
-          width: 20,
-          height: 20,
-          child: AnimatedBuilder(
-            animation: _ctrl,
-            builder: (context, _) {
-              return CircularProgressIndicator(
-                value: 1.0 - _ctrl.value,
-                strokeWidth: 2,
-                color: Colors.white24,
-                backgroundColor: Colors.white.withValues(alpha: 0.05),
-              );
-            },
+        // Decorative countdown ring — exclude from semantics so its per-frame
+        // animation doesn't churn the accessibility tree (Windows AXTree spam).
+        ExcludeSemantics(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: AnimatedBuilder(
+              animation: _ctrl,
+              builder: (context, _) {
+                return CircularProgressIndicator(
+                  value: 1.0 - _ctrl.value,
+                  strokeWidth: 2,
+                  color: Colors.white24,
+                  backgroundColor: Colors.white.withValues(alpha: 0.05),
+                );
+              },
+            ),
           ),
         ),
       ],

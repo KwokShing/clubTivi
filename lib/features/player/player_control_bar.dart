@@ -75,8 +75,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
   bool _playing = false;
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
-  int? _videoWidth;
-  int? _videoHeight;
   bool _isSeeking = false;
   double _seekValue = 0.0;
 
@@ -85,8 +83,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
   final List<StreamSubscription> _subs = [];
   Timer? _fpsTimer;
   String _fpsLabel = '—';
-  String _codecLabel = '';
-  bool _isInterlaced = false;
   String _bufferDuration = '—';
   final List<double> _fpsHistory = [];
   final List<double> _bufferHistory = [];
@@ -105,15 +101,11 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
       final ps = ref.read(playerServiceProvider);
       final results = await Future.wait([
         ps.getMpvProperty('estimated-vf-fps'),
-        ps.getMpvProperty('video-codec'),
-        ps.getMpvProperty('video-params/pixelformat'),
         ps.getMpvProperty('demuxer-cache-duration'),
       ]);
       if (!mounted) return;
       final fps = double.tryParse(results[0] ?? '');
-      final codec = results[1] ?? '';
-      final pixFmt = results[2] ?? '';
-      final bufDur = double.tryParse(results[3] ?? '');
+      final bufDur = double.tryParse(results[1] ?? '');
       setState(() {
         _bufferDuration = bufDur != null ? bufDur.toStringAsFixed(1) : '—';
         if (bufDur != null) {
@@ -126,9 +118,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
           _fpsHistory.add(fps);
           if (_fpsHistory.length > 60) _fpsHistory.removeAt(0);
         }
-        // Extract short codec name (e.g. "h264" from "h264 (High)")
-        _codecLabel = codec.split(' ').first.toUpperCase();
-        _isInterlaced = pixFmt.contains('interlaced') || pixFmt.contains('tff') || pixFmt.contains('bff');
       });
     });
   }
@@ -141,8 +130,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
     _playing = player.state.playing;
     _position = player.state.position;
     _duration = player.state.duration;
-    _videoWidth = player.state.width;
-    _videoHeight = player.state.height;
 
     _subs.add(player.stream.volume.listen((v) {
       if (mounted) setState(() => _volume = v);
@@ -155,12 +142,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
     }));
     _subs.add(player.stream.duration.listen((d) {
       if (mounted) setState(() => _duration = d);
-    }));
-    _subs.add(player.stream.width.listen((w) {
-      if (mounted) setState(() => _videoWidth = w);
-    }));
-    _subs.add(player.stream.height.listen((h) {
-      if (mounted) setState(() => _videoHeight = h);
     }));
   }
 
@@ -175,16 +156,6 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return h > 0 ? '$h:$m:$s' : '00:$m:$s';
-  }
-
-  String _resolutionLabel() {
-    final h = _videoHeight ?? 0;
-    if (h >= 2160) return '4K UHD';
-    if (h >= 1080) return '1080 HD';
-    if (h >= 720) return '720 HD';
-    if (h >= 480) return '480 SD';
-    if (h > 0) return '${h}p';
-    return '—';
   }
 
   void _comingSoon(String feature) {

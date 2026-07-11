@@ -29,22 +29,22 @@ class StreamAlternativesService {
   final StreamHealthTracker _health;
 
   /// Vanity name → list of channels (user-confirmed grouping).
-  Map<String, List<Channel>> _vanityIndex = {};
+  final Map<String, List<Channel>> _vanityIndex = {};
 
   /// EPG channel ID → list of channels (from all providers).
-  Map<String, List<Channel>> _epgIndex = {};
+  final Map<String, List<Channel>> _epgIndex = {};
 
   /// tvgId → list of channels.
-  Map<String, List<Channel>> _tvgIdIndex = {};
+  final Map<String, List<Channel>> _tvgIdIndex = {};
 
   /// Normalized name → list of channels.
-  Map<String, List<Channel>> _nameIndex = {};
+  final Map<String, List<Channel>> _nameIndex = {};
 
   /// Call sign → list of channels (e.g., WCBS, WABC, KABC).
-  Map<String, List<Channel>> _callSignIndex = {};
+  final Map<String, List<Channel>> _callSignIndex = {};
 
   /// Provider ID → display name cache.
-  Map<String, String> _providerNames = {};
+  final Map<String, String> _providerNames = {};
 
   /// All channels cached for fuzzy fallback.
   List<Channel> _allChannels = [];

@@ -95,6 +95,7 @@ class _MultiViewScreenState extends ConsumerState<MultiViewScreen> {
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () {
           Future.microtask(() {
+            if (!context.mounted) return;
             Navigator.of(context).pop();
           });
         },

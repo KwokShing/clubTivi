@@ -150,10 +150,12 @@ class ShowsRepository {
       if (type == ShowType.show) {
         final numSeasons = detail.numberOfSeasons ?? 0;
         _log.i('Fetching $numSeasons seasons for ${detail.title}');
-        for (int i = 1; i <= numSeasons; i++) {
+        final seasonNumbers = [for (int i = 1; i <= numSeasons; i++) i];
+        seasons = await _mapWithConcurrency<int, Season>(seasonNumbers,
+            (i) async {
           try {
             final tmdbSeason = await _tmdb.getTvSeason(tmdbId, i);
-            seasons.add(Season(
+            return Season(
               number: i,
               overview: tmdbSeason.overview,
               episodeCount: tmdbSeason.episodes.length,
@@ -161,12 +163,12 @@ class ShowsRepository {
               posterUrl: tmdbSeason.posterPath != null
                   ? TmdbClient.posterUrl(tmdbSeason.posterPath)
                   : null,
-            ));
+            );
           } catch (e) {
             _log.w('Failed to fetch season $i for $tmdbId: $e');
-            seasons.add(Season(number: i));
+            return Season(number: i);
           }
-        }
+        });
       }
 
       return ShowDetail(show: show, seasons: seasons);
@@ -302,22 +304,18 @@ class ShowsRepository {
   /// Enrich a list of shows with TMDB poster/backdrop URLs
   Future<List<Show>> _enrichWithTmdb(List<Show> shows) async {
     if (_tmdb == null) return shows;
-
-    final enriched = <Show>[];
-    for (final show in shows) {
-      enriched.add(await _enrichSingle(show));
-    }
-    return enriched;
+    // Fetch details concurrently (bounded) instead of one serial round-trip per
+    // show — turns N sequential API calls into ~N/concurrency batches.
+    return _mapWithConcurrency<Show, Show>(shows, _enrichSingle);
   }
 
   /// Enrich seasons with TMDB posters/overviews
   Future<List<Season>> _enrichSeasons(int tmdbId, List<Season> seasons) async {
     if (_tmdb == null) return seasons;
-    final result = <Season>[];
-    for (final season in seasons) {
+    return _mapWithConcurrency<Season, Season>(seasons, (season) async {
       try {
         final tmdbSeason = await _tmdb.getTvSeason(tmdbId, season.number);
-        result.add(Season(
+        return Season(
           number: season.number,
           title: season.title,
           overview: tmdbSeason.overview ?? season.overview,
@@ -330,12 +328,11 @@ class ShowsRepository {
           firstAired: season.firstAired,
           traktId: season.traktId,
           tmdbId: season.tmdbId,
-        ));
+        );
       } catch (_) {
-        result.add(season);
+        return season;
       }
-    }
-    return result;
+    });
   }
 
   /// Enrich Trakt episodes with TMDB stills
@@ -384,6 +381,32 @@ class ShowsRepository {
       _log.w('TMDB enrichment failed for ${show.title}: $e');
       return show;
     }
+  }
+
+  /// Run [action] over [items] with bounded concurrency, preserving input
+  /// order. Caps in-flight requests so we don't flood the TMDB API (which
+  /// rate-limits) while still collapsing N serial round-trips into batches.
+  Future<List<R>> _mapWithConcurrency<T, R>(
+    List<T> items,
+    Future<R> Function(T item) action, {
+    int concurrency = 6,
+  }) async {
+    if (items.isEmpty) return <R>[];
+    final results = List<R?>.filled(items.length, null);
+    var next = 0;
+    Future<void> worker() async {
+      while (true) {
+        final i = next++;
+        if (i >= items.length) return;
+        results[i] = await action(items[i]);
+      }
+    }
+
+    final workers = [
+      for (var w = 0; w < concurrency && w < items.length; w++) worker(),
+    ];
+    await Future.wait(workers);
+    return results.cast<R>();
   }
 
   /// Convert TMDB search results to Show objects (fallback when Trakt unavailable)

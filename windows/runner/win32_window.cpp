@@ -2,8 +2,11 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <commctrl.h>
 
 #include "resource.h"
+
+#pragma comment(lib, "comctl32.lib")
 
 namespace {
 
@@ -51,6 +54,26 @@ void EnableFullDpiSupportIfAvailable(HWND hwnd) {
     enable_non_client_dpi_scaling(hwnd);
   }
   FreeLibrary(user32_module);
+}
+
+// Subclass procedure installed on the Flutter view (child) window.
+//
+// Flutter enables its semantics/accessibility bridge as soon as it receives a
+// WM_GETOBJECT for a UI Automation / MSAA client on the view HWND. On Windows
+// that bridge fails to reconcile trees that mutate on every focus change / tap
+// (i.e. essentially every UI interaction) and floods the console with:
+//   accessibility_bridge.cc(114) Failed to update ui::AXTree ...
+// We don't ship a screen-reader experience on desktop, so we intercept
+// WM_GETOBJECT on the view window and return 0 ("no accessible object") before
+// the engine can see it. The engine then never turns on semantics and the
+// errors stop entirely.
+LRESULT CALLBACK ChildWindowSubclassProc(HWND hwnd, UINT message, WPARAM wparam,
+                                         LPARAM lparam, UINT_PTR subclass_id,
+                                         DWORD_PTR ref_data) {
+  if (message == WM_GETOBJECT) {
+    return 0;
+  }
+  return DefSubclassProc(hwnd, message, wparam, lparam);
 }
 
 }  // namespace
@@ -241,6 +264,12 @@ Win32Window* Win32Window::GetThisFromHandle(HWND const window) noexcept {
 void Win32Window::SetChildContent(HWND content) {
   child_content_ = content;
   SetParent(content, window_handle_);
+
+  // Intercept accessibility activation on the Flutter view window so the engine
+  // never enables its (buggy-on-Windows) semantics bridge. See
+  // ChildWindowSubclassProc for the full rationale.
+  SetWindowSubclass(content, ChildWindowSubclassProc, 1, 0);
+
   RECT frame = GetClientArea();
 
   MoveWindow(content, frame.left, frame.top, frame.right - frame.left,

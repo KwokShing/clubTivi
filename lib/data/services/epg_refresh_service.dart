@@ -9,19 +9,7 @@ import 'package:uuid/uuid.dart';
 
 import '../datasources/local/database.dart' as db;
 import '../datasources/parsers/xmltv_parser.dart';
-import '../models/epg.dart';
 import '../../features/providers/provider_manager.dart';
-
-/// Runs heavy XML parsing in a background isolate.
-XmltvResult _parseInIsolate(_ParseArgs args) {
-  return XmltvParser().parse(args.xml, sourceId: args.sourceId);
-}
-
-class _ParseArgs {
-  final String xml;
-  final String sourceId;
-  const _ParseArgs(this.xml, this.sourceId);
-}
 
 class EpgRefreshService {
   final db.AppDatabase _db;
@@ -159,11 +147,6 @@ class EpgRefreshService {
 
   Future<void> _insertDefaults() async {
     final defaults = [
-      (
-        name: 'EPG.best',
-        url: 'http://epg.best/16b5b-ypkixv.xml.gz',
-        enabled: true,
-      ),
       (
         name: 'USA Locals (ABC, CBS, Fox, NBC)',
         url:

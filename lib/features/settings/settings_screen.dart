@@ -220,6 +220,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             return;
           }
           Future.microtask(() {
+            if (!context.mounted) return;
             if (Navigator.of(context).canPop()) {
               Navigator.of(context).pop();
             } else {
@@ -631,6 +632,7 @@ class _EpgSourcesScreenState extends ConsumerState<_EpgSourcesScreen> {
             return;
           }
           Future.microtask(() {
+            if (!context.mounted) return;
             Navigator.of(context).pop();
           });
         },
@@ -1332,6 +1334,7 @@ class _LocationTileState extends ConsumerState<_LocationTile> {
                       error = null;
                     });
                     final geo = await geocodeZipcode(val);
+                    if (!ctx.mounted) return;
                     if (geo != null) {
                       Navigator.pop(ctx, val);
                     } else {
@@ -1528,13 +1531,20 @@ class _AutoRefreshTileState extends State<_AutoRefreshTile> {
           builder: (ctx) => SimpleDialog(
             title: const Text('Auto-Refresh Interval'),
             children: [
-              for (final h in _options)
-                RadioListTile<int>(
-                  title: Text('Every $h hour${h == 1 ? '' : 's'}'),
-                  value: h,
-                  groupValue: _hours,
-                  onChanged: (v) => Navigator.pop(ctx, v),
+              RadioGroup<int>(
+                groupValue: _hours,
+                onChanged: (v) => Navigator.pop(ctx, v),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final h in _options)
+                      RadioListTile<int>(
+                        title: Text('Every $h hour${h == 1 ? '' : 's'}'),
+                        value: h,
+                      ),
+                  ],
                 ),
+              ),
             ],
           ),
         );
@@ -1587,13 +1597,20 @@ class _BufferSizeTileState extends State<_BufferSizeTile> {
           builder: (ctx) => SimpleDialog(
             title: const Text('Buffer Size'),
             children: [
-              for (final entry in _options.entries)
-                RadioListTile<String>(
-                  title: Text(entry.key),
-                  value: entry.key,
-                  groupValue: _buffer,
-                  onChanged: (v) => Navigator.pop(ctx, v),
+              RadioGroup<String>(
+                groupValue: _buffer,
+                onChanged: (v) => Navigator.pop(ctx, v),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final entry in _options.entries)
+                      RadioListTile<String>(
+                        title: Text(entry.key),
+                        value: entry.key,
+                      ),
+                  ],
                 ),
+              ),
             ],
           ),
         );

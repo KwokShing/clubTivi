@@ -81,7 +81,6 @@ class BackupService {
 
     // 4. Write ZIP
     final zipBytes = ZipEncoder().encode(archive);
-    if (zipBytes == null) throw Exception('Failed to create backup archive');
 
     final ts = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
     final outDir = await getApplicationDocumentsDirectory();

@@ -674,9 +674,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   ? GoRouter.of(context).pop()
                   : GoRouter.of(context).go('/');
             },
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
+            // Transient, fast-toggling video overlays (control bar, info banner,
+            // volume popup) constantly add/remove subtrees. On Windows this
+            // churns the semantics tree and spams accessibility_bridge with
+            // "Failed to update ui::AXTree" errors. Excluding the player's
+            // transient chrome from semantics stops that spam; the video
+            // surface itself carries no meaningful semantics anyway.
+            child: ExcludeSemantics(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
                 // Video — fill entire screen
                 Video(
                   controller: playerService.videoController,
@@ -1149,6 +1156,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                     ),
                   ),
               ],
+              ),
             ),
           ),
         ),

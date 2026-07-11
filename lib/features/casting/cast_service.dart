@@ -53,6 +53,9 @@ class CastService {
   /// The device we are casting to.
   CastDevice? get activeDevice => _activeDevice;
 
+  /// The stream URL currently being cast, if any.
+  String? get activeUrl => _activeUrl;
+
   /// Start scanning for DLNA/UPnP devices on the local network.
   /// LG WebOS TVs can be slow to respond — uses fallback if needed.
   Future<void> startDiscovery() async {
