@@ -7,7 +7,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -26,6 +25,9 @@ import '../player/stream_info_badges.dart';
 import '../providers/provider_manager.dart';
 import '../shows/shows_providers.dart';
 import 'channel_debug_dialog.dart';
+import 'channel_epg_matching.dart';
+import 'channel_ping.dart';
+import 'preview_info_badges.dart';
 
 class ChannelsScreen extends ConsumerStatefulWidget {
   const ChannelsScreen({super.key});
@@ -343,130 +345,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     setState(() {
       _setNowPlaying(nowPlaying);
     });
-  }
-
-  /// Extract a broadcast call-sign sort key from a channel name.
-  /// Channels with call signs (W/K + 2-3 letters) sort first (uppercase),
-  /// others sort by cleaned name (lowercase) so they come after.
-  static String _callSignSortKey(String name) {
-    // Strip provider prefixes like "US-P|", "US: ", "UK- ", "CA-", "MX-"
-    var s = name.replaceAll(RegExp(r'^[A-Z]{2}[\s:-]*[A-Z]*\|'), '');
-    s = s.replaceAll(
-      RegExp(r'^(US|UK|CA|MX)[\s:-]+', caseSensitive: false),
-      '',
-    );
-    // Strip bracketed tags [US], [SP], [H]
-    s = s.replaceAll(RegExp(r'\[.*?\]'), '');
-    // Strip quality tags
-    s = s.replaceAll(
-      RegExp(r'\b(HD|FHD|SHD|SD|4K|UHD)\b', caseSensitive: false),
-      '',
-    );
-    // Strip common location names
-    s = s.replaceAll(
-      RegExp(
-        r'\b(New York|Los Angeles|Chicago|Houston|Phoenix|Philadelphia|San Antonio|San Diego|Dallas|San Jose|Austin|Jacksonville|Fort Worth|Columbus|Charlotte|Indianapolis|San Francisco|Seattle|Denver|Washington|Nashville|Oklahoma City|El Paso|Boston|Portland|Las Vegas|Memphis|Louisville|Baltimore|Milwaukee|Albuquerque|Tucson|Fresno|Mesa|Sacramento|Atlanta|Kansas City|Colorado Springs|Omaha|Raleigh|Long Beach|Virginia Beach|Miami|Oakland|Minneapolis|Tampa|Tulsa|Arlington|New Orleans|Cleveland|Orlando|Cincinnati|Pittsburgh|Detroit|St\.? Louis)\b',
-        caseSensitive: false,
-      ),
-      '',
-    );
-    s = s.trim();
-    // Try to find a broadcast call sign: W or K followed by 2-3 letters
-    final csMatch = RegExp(
-      r'\b([WK][A-Z]{2,3})\b',
-      caseSensitive: false,
-    ).firstMatch(s);
-    if (csMatch != null) {
-      final cs = csMatch.group(1)!.toUpperCase();
-      // Validate it looks like a real call sign (not a common word)
-      if (cs.length >= 3 && cs.length <= 4) return cs;
-    }
-    // No call sign found — return cleaned name lowercase (sorts after uppercase)
-    return s.replaceAll(RegExp(r'[^a-zA-Z0-9]+'), ' ').trim().toLowerCase();
-  }
-
-  static String _normalizeName(String name) {
-    return name
-        .toLowerCase()
-        .replaceAll(
-          RegExp(r'\b(hd|fhd|shd|sd|4k|uhd)\b', caseSensitive: false),
-          '',
-        )
-        .replaceAll(
-          RegExp(r'(us-?[a-z]*\|?|uk-?[a-z]*\|?|ca-?[a-z]*\|?|mx-?[a-z]*\|?)'),
-          '',
-        )
-        .replaceAll(RegExp(r'[\s|()[\]]+'), ' ')
-        .trim();
-  }
-
-  /// Invisible / zero-width characters that can differ between how a playlist
-  /// is saved on one platform vs another (BOM, zero-width spaces, NBSP) and
-  /// silently break exact-string EPG id matching.
-  static final _epgInvisibleChars = RegExp(
-    r'[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00A0]',
-  );
-
-  /// Canonical key for exact tvg-id / tvg-name ↔ XMLTV channel-id matching:
-  /// lowercased, invisible chars stripped, trimmed. Applied on BOTH sides so a
-  /// stray BOM/zero-width/NBSP (e.g. from a differently-saved playlist) can't
-  /// make an otherwise-identical id fail to match on one platform.
-  static String _epgIdKey(String s) =>
-      s.toLowerCase().replaceAll(_epgInvisibleChars, '').trim();
-
-  /// Normalize a channel/EPG display name for fuzzy EPG matching.
-  /// Strips country tags, quality tags, provider prefixes, call signs in parens.
-  static String _normalizeForEpgMatch(String name) {
-    return name
-        .toLowerCase()
-        .replaceAll(RegExp(r'\[.*?\]'), '') // [US], [SP], [H]
-        .replaceAll(RegExp(r'\(.*?\)'), '') // (WABC), (S)
-        .replaceAll(RegExp(r'\b(hd|fhd|shd|sd|4k|uhd|us|uk|ca|mx)\b'), '')
-        .replaceAll(RegExp(r'us-?[a-z]*\|'), '') // US-P| prefix
-        .replaceAll(
-          RegExp(r'[^\p{L}\p{N}]+', unicode: true),
-          ' ',
-        ) // keep all letters (incl. CJK) + digits
-        .trim()
-        .replaceAll(RegExp(r'\s+'), ' ');
-  }
-
-  /// Extract a broadcast call sign (3-4 uppercase letters starting with W or K)
-  /// from a channel name. Checks parenthesized call signs like (WABC) first,
-  /// then tvgId patterns, then words in the name.
-  static final _callSignInParens = RegExp(r'\(([WK][A-Z]{2,3})\)');
-  static final _callSignInTvgId = RegExp(
-    r'[.\-_]([wk][a-z]{2,3})(?:[.\-_]|$)',
-    caseSensitive: false,
-  );
-  static final _callSignWord = RegExp(r'\b([WK][A-Z]{2,3})\b');
-
-  static String? _extractCallSign(String name, String? tvgId) {
-    // 1. Check parenthesized call sign: (WABC)
-    final parenMatch = _callSignInParens.firstMatch(name);
-    if (parenMatch != null) return parenMatch.group(1)!.toUpperCase();
-    // 2. Check tvgId for embedded call sign: abcwabc.us, ABC.(WABC).New.York
-    if (tvgId != null && tvgId.isNotEmpty) {
-      final tvgMatch = _callSignInTvgId.firstMatch(tvgId);
-      if (tvgMatch != null) return tvgMatch.group(1)!.toUpperCase();
-      // Also try last segment before .us: e.g. "cbs2wcbs.us" → extract WCBS
-      final dotParts = tvgId
-          .replaceAll(RegExp(r'\.us$', caseSensitive: false), '')
-          .split('.');
-      for (final part in dotParts) {
-        final m = RegExp(
-          r'([wk][a-z]{2,3})$',
-          caseSensitive: false,
-        ).firstMatch(part);
-        if (m != null) return m.group(1)!.toUpperCase();
-      }
-    }
-    // 3. Check name for standalone call sign word
-    final wordMatch = _callSignWord.firstMatch(
-      name.replaceAll(RegExp(r'\(.*?\)'), ''),
-    );
-    if (wordMatch != null) return wordMatch.group(1)!.toUpperCase();
-    return null;
   }
 
   /// Clear the search bar and re-apply filters.
@@ -809,8 +687,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       final chs = await database.getEpgChannelsForSource(src.id);
       for (final ch in chs) {
         validIds.add(ch.id);
-        rawToPrefixed[_epgIdKey(ch.channelId)] = ch.id;
-        final normName = _normalizeForEpgMatch(ch.displayName);
+        rawToPrefixed[epgIdKey(ch.channelId)] = ch.id;
+        final normName = normalizeForEpgMatch(ch.displayName);
         if (normName.isNotEmpty) epgNameToId[normName] = ch.id;
         // Index by call sign extracted from channelId (e.g. WABC.us → WABC)
         final rawUpper = ch.channelId.toUpperCase();
@@ -849,13 +727,13 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     // Build failover name index + EPG scope
     final normNameIndex = <String, List<String>>{};
     for (final c in allChannels) {
-      final norm = _normalizeName(c.name);
+      final norm = normalizeChannelName(c.name);
       (normNameIndex[norm] ??= []).add(c.id);
     }
     final epgScopeIds = <String>{...favChannelIds};
     final favChannels = allChannels.where((c) => favChannelIds.contains(c.id));
     for (final fav in favChannels) {
-      final normName = _normalizeName(fav.name);
+      final normName = normalizeChannelName(fav.name);
       final alts = normNameIndex[normName];
       if (alts != null) epgScopeIds.addAll(alts);
     }
@@ -871,26 +749,26 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       }
       // tvg-name first (preferred when present), then tvg-id.
       if (c.tvgName != null && c.tvgName!.isNotEmpty) {
-        final prefixed = rawToPrefixed[_epgIdKey(c.tvgName!)];
+        final prefixed = rawToPrefixed[epgIdKey(c.tvgName!)];
         if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
       }
       if (c.tvgId != null && c.tvgId!.isNotEmpty) {
-        final prefixed = rawToPrefixed[_epgIdKey(c.tvgId!)];
+        final prefixed = rawToPrefixed[epgIdKey(c.tvgId!)];
         if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
       }
       // Display name (after-comma channel name) → XMLTV channel id.
       if (c.name.isNotEmpty) {
-        final prefixed = rawToPrefixed[_epgIdKey(c.name)];
+        final prefixed = rawToPrefixed[epgIdKey(c.name)];
         if (prefixed != null) { epgChannelIds.add(prefixed); continue; }
       }
       // Fallback: match by normalized channel name
-      final normName = _normalizeForEpgMatch(c.name);
+      final normName = normalizeForEpgMatch(c.name);
       if (normName.isNotEmpty) {
         final byName = epgNameToId[normName];
         if (byName != null) { epgChannelIds.add(byName); continue; }
       }
       // Fallback: match by call sign (WABC, WCBS, WNYW)
-      final callSign = _extractCallSign(c.name, c.tvgId);
+      final callSign = extractCallSign(c.name, c.tvgId);
       if (callSign != null) {
         final byCs = epgCallSignToId[callSign];
         if (byCs != null) epgChannelIds.add(byCs);
@@ -984,9 +862,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         channels =
             channels.where((c) => _favoritedChannelIds.contains(c.id)).toList()
               ..sort(
-                (a, b) => _callSignSortKey(
+                (a, b) => callSignSortKey(
                   _channelDisplayName(a),
-                ).compareTo(_callSignSortKey(_channelDisplayName(b))),
+                ).compareTo(callSignSortKey(_channelDisplayName(b))),
               );
       } else if (_selectedGroup.startsWith('fav:')) {
         final listId = _selectedGroup.substring(4);
@@ -1097,9 +975,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       }).toList();
     }
     channels.sort(
-      (a, b) => _callSignSortKey(
+      (a, b) => callSignSortKey(
         _channelDisplayName(a),
-      ).compareTo(_callSignSortKey(_channelDisplayName(b))),
+      ).compareTo(callSignSortKey(_channelDisplayName(b))),
     );
     if (!mounted) return;
     setState(() {
@@ -1225,12 +1103,12 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
 
     // 1. tvg-name → XMLTV channel id (use tvg-name first when it's set).
     if (channel.tvgName != null && channel.tvgName!.isNotEmpty) {
-      final prefixed = _rawToPrefixedEpg[_epgIdKey(channel.tvgName!)];
+      final prefixed = _rawToPrefixedEpg[epgIdKey(channel.tvgName!)];
       if (prefixed != null) return prefixed;
     }
     // 2. tvg-id → XMLTV channel id (fallback when tvg-name is empty/unmatched).
     if (channel.tvgId != null && channel.tvgId!.isNotEmpty) {
-      final prefixed = _rawToPrefixedEpg[_epgIdKey(channel.tvgId!)];
+      final prefixed = _rawToPrefixedEpg[epgIdKey(channel.tvgId!)];
       if (prefixed != null) return prefixed;
     }
     // 3. Display name (text after the last comma in #EXTINF) → XMLTV channel
@@ -1238,17 +1116,17 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     // whose channel name equals the EPG channel id (e.g. tvg-name="NOW新闻",
     // name="NOW新闻台").
     if (channel.name.isNotEmpty) {
-      final prefixed = _rawToPrefixedEpg[_epgIdKey(channel.name)];
+      final prefixed = _rawToPrefixedEpg[epgIdKey(channel.name)];
       if (prefixed != null) return prefixed;
     }
     // 4. Fallback: normalized channel name against EPG display names.
-    final normName = _normalizeForEpgMatch(channel.name);
+    final normName = normalizeForEpgMatch(channel.name);
     if (normName.isNotEmpty) {
       final byName = _epgNameToId[normName];
       if (byName != null) return byName;
     }
     // 5. Fallback: broadcast call sign (WABC, WCBS, etc.).
-    final callSign = _extractCallSign(channel.name, channel.tvgId);
+    final callSign = extractCallSign(channel.name, channel.tvgId);
     if (callSign != null) {
       final byCs = _epgCallSignToId[callSign];
       if (byCs != null) return byCs;
@@ -2252,7 +2130,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                                   Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      _StreamInfoBadges(
+                                      StreamInfoBadges(
                                         playerService: playerService,
                                       ),
                                       if (_getProviderName(
@@ -2755,7 +2633,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                               ),
                             ),
                             const SizedBox(width: 8),
-                            _PreviewInfoBadges(playerService: playerService),
+                            PreviewInfoBadges(playerService: playerService),
                           ],
                         ),
                         if (programme != null)
@@ -4335,7 +4213,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           // Stream reachability probe (green "123 ms" / red dot)
                           Padding(
                             padding: const EdgeInsets.only(right: 6, left: 2),
-                            child: _ChannelPing(
+                            child: ChannelPing(
                               url: channel.streamUrl,
                               active: !_channelListScrolling,
                             ),
@@ -7315,306 +7193,4 @@ class _EpgCandidate {
     this.sourceId,
     this.sourceName,
   );
-}
-
-/// Reads mpv properties to show resolution, aspect ratio, and audio channel badges.
-class _StreamInfoBadges extends StreamInfoBadges {
-  const _StreamInfoBadges({required super.playerService});
-}
-
-/// Compact, periodically-refreshing technical badges (resolution, fps, codec,
-/// audio channels) used in the inline preview overlay's top bar.
-class _PreviewInfoBadges extends StatefulWidget {
-  final dynamic playerService;
-  const _PreviewInfoBadges({required this.playerService});
-
-  @override
-  State<_PreviewInfoBadges> createState() => _PreviewInfoBadgesState();
-}
-
-class _PreviewInfoBadgesState extends State<_PreviewInfoBadges> {
-  Timer? _timer;
-  String? _resolution;
-  String? _fps;
-  String? _codec;
-  String? _audio;
-
-  @override
-  void initState() {
-    super.initState();
-    _refresh();
-    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
-  }
-
-  Future<void> _refresh() async {
-    final ps = widget.playerService;
-    final results = await Future.wait<String?>([
-      ps.getMpvProperty('video-params/h') as Future<String?>,
-      ps.getMpvProperty('estimated-vf-fps') as Future<String?>,
-      ps.getMpvProperty('video-codec') as Future<String?>,
-      ps.getMpvProperty('audio-params/channel-count') as Future<String?>,
-    ]);
-    if (!mounted) return;
-    setState(() {
-      final h = int.tryParse(results[0] ?? '') ?? 0;
-      _resolution = h >= 2160 ? '4K' : (h > 0 ? '${h}p' : null);
-      final fps = double.tryParse(results[1] ?? '');
-      _fps = fps != null ? '${fps.toStringAsFixed(0)} fps' : null;
-      final codec = results[2] ?? '';
-      _codec = codec.isNotEmpty ? codec.split(' ').first.toUpperCase() : null;
-      final aCh = int.tryParse(results[3] ?? '') ?? 0;
-      _audio = aCh == 2
-          ? '2.0'
-          : aCh == 6
-          ? '5.1'
-          : aCh == 8
-          ? '7.1'
-          : aCh == 1
-          ? 'Mono'
-          : (aCh > 0 ? '${aCh}ch' : null);
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final badges = <String>[
-      ?_resolution,
-      ?_fps,
-      ?_codec,
-      ?_audio,
-    ];
-    if (badges.isEmpty) return const SizedBox.shrink();
-    return Wrap(
-      spacing: 4,
-      runSpacing: 4,
-      children: badges
-          .map(
-            (b) => Container(
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: Colors.white24, width: 0.5),
-              ),
-              child: Text(
-                b,
-                style: const TextStyle(
-                  fontSize: 9,
-                  color: Colors.white70,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          )
-          .toList(),
-    );
-  }
-}
-
-/// Result of a reachability probe against a channel's stream host.
-class _PingResult {
-  const _PingResult.reachable(this.ms) : reachable = true;
-  const _PingResult.unreachable() : ms = null, reachable = false;
-
-  final int? ms;
-  final bool reachable;
-}
-
-/// A minimal counting semaphore used to cap how many reachability probes run
-/// at once. Without it, scrolling through a long list could open hundreds of
-/// simultaneous connections and hammer both the machine and the servers.
-class _PingSemaphore {
-  _PingSemaphore(this.maxConcurrent);
-
-  final int maxConcurrent;
-  int _active = 0;
-  final List<Completer<void>> _waiters = <Completer<void>>[];
-
-  Future<void> acquire() {
-    if (_active < maxConcurrent) {
-      _active++;
-      return Future<void>.value();
-    }
-    final completer = Completer<void>();
-    _waiters.add(completer);
-    return completer.future;
-  }
-
-  void release() {
-    if (_waiters.isNotEmpty) {
-      _waiters.removeAt(0).complete();
-    } else if (_active > 0) {
-      _active--;
-    }
-  }
-}
-
-/// Probes whether a channel's stream can actually be reached by issuing a
-/// streamed HTTP GET for just the first bytes and measuring the time to the
-/// first response (TTFB). Unlike a bare TCP handshake this confirms the real
-/// stream path exists, auth passed and the server is willing to serve data —
-/// a 2xx/3xx response counts as reachable, anything else (4xx/5xx, timeout or
-/// network error) counts as unreachable. Results are cached per URL for the
-/// session, in-flight probes are de-duplicated, and a semaphore caps how many
-/// run concurrently.
-class _PingService {
-  _PingService._();
-
-  static const Duration timeout = Duration(seconds: 5);
-
-  // Many IPTV servers reject unknown clients, so present a player-like agent.
-  static const String _userAgent = 'VLC/3.0.20 LibVLC/3.0.20';
-
-  static final http.Client _client = http.Client();
-  // Probes are almost entirely idle network waits, so a higher ceiling is cheap
-  // and keeps the rows currently on screen from queueing behind slow/dead hosts
-  // that hold a slot for the full timeout. Enough to cover a screenful at once.
-  static final _PingSemaphore _semaphore = _PingSemaphore(24);
-
-  static final Map<String, _PingResult> _cache = <String, _PingResult>{};
-  static final Map<String, Future<_PingResult>> _inFlight =
-      <String, Future<_PingResult>>{};
-
-  static _PingResult? cached(String url) => _cache[url];
-
-  static Future<_PingResult> ping(String url) {
-    final existing = _cache[url];
-    if (existing != null) return Future<_PingResult>.value(existing);
-    final inFlight = _inFlight[url];
-    if (inFlight != null) return inFlight;
-
-    final future = _runGuarded(url);
-    _inFlight[url] = future;
-    return future;
-  }
-
-  static Future<_PingResult> _runGuarded(String url) async {
-    await _semaphore.acquire();
-    try {
-      final result = await _measure(url);
-      _cache[url] = result;
-      return result;
-    } finally {
-      _semaphore.release();
-      _inFlight.remove(url);
-    }
-  }
-
-  static Future<_PingResult> _measure(String url) async {
-    Uri uri;
-    try {
-      uri = Uri.parse(url);
-    } catch (_) {
-      return const _PingResult.unreachable();
-    }
-    if (uri.host.isEmpty || !uri.hasScheme) {
-      return const _PingResult.unreachable();
-    }
-
-    final request = http.Request('GET', uri)
-      ..followRedirects = true
-      ..maxRedirects = 5
-      ..headers['Range'] = 'bytes=0-1'
-      ..headers['User-Agent'] = _userAgent
-      ..headers['Accept'] = '*/*';
-
-    final stopwatch = Stopwatch()..start();
-    try {
-      final response = await _client.send(request).timeout(timeout);
-      stopwatch.stop();
-      // We only needed the headers (TTFB). Cancel the body so we never pull a
-      // whole live stream down when the server ignores our Range request.
-      unawaited(response.stream.listen(null).cancel());
-
-      final code = response.statusCode;
-      if (code >= 200 && code < 400) {
-        return _PingResult.reachable(stopwatch.elapsedMilliseconds);
-      }
-      return const _PingResult.unreachable();
-    } catch (_) {
-      return const _PingResult.unreachable();
-    }
-  }
-}
-
-/// Shows a channel's reachability. Green "123 ms" text means the host answered;
-/// a red dot means it timed out (>5s) or refused the connection. Like the logos
-/// next to it, the probe only fires once scrolling settles on the row, so a
-/// fast fling doesn't dial every host it flies past.
-class _ChannelPing extends StatefulWidget {
-  const _ChannelPing({required this.url, required this.active});
-
-  final String url;
-  final bool active;
-
-  @override
-  State<_ChannelPing> createState() => _ChannelPingState();
-}
-
-class _ChannelPingState extends State<_ChannelPing> {
-  _PingResult? _result;
-  bool _requested = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _result = _PingService.cached(widget.url);
-    _maybePing();
-  }
-
-  @override
-  void didUpdateWidget(_ChannelPing oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // Tiles are recycled as the list scrolls, so the same state can be handed a
-    // different channel. Reset to that channel's cached result and probe again.
-    if (oldWidget.url != widget.url) {
-      _result = _PingService.cached(widget.url);
-      _requested = false;
-    }
-    _maybePing();
-  }
-
-  void _maybePing() {
-    if (_result != null || _requested || !widget.active) return;
-    _requested = true;
-    final url = widget.url;
-    _PingService.ping(url).then((result) {
-      if (mounted && widget.url == url) {
-        setState(() => _result = result);
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final result = _result;
-    if (result == null) {
-      // Not measured yet (or currently probing): keep the slot empty.
-      return const SizedBox(width: 8);
-    }
-    if (!result.reachable) {
-      return Container(
-        width: 8,
-        height: 8,
-        decoration: const BoxDecoration(
-          color: Color(0xffe23c3c),
-          shape: BoxShape.circle,
-        ),
-      );
-    }
-    return Text(
-      '${result.ms} ms',
-      style: const TextStyle(
-        color: Color(0xff1faa59),
-        fontWeight: FontWeight.w700,
-        fontSize: 12,
-      ),
-    );
-  }
 }
