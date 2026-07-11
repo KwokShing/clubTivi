@@ -143,4 +143,63 @@ http://example.com/valid
       expect(result.channels[0].name, 'Valid Channel');
     });
   });
+
+  group('M3uParser TXT (name,url + #genre#)', () {
+    test('parses comma-separated channels with #genre# group headers', () {
+      const content = '''央视频道,#genre#
+CCTV1,http://223.247.25.207:1234/608807420\$安徽电信
+CCTV1,http://101.6.130.52:1234/608807420\$北京教育
+CCTV1,http://116.236.204.18:1234/608807420\$上海电信
+CCTV1,http://182.61.15.163:80/608807420\$广东百度云
+''';
+
+      final result = parser.parse(content, providerId: 'p1');
+
+      expect(result.hasErrors, false);
+      expect(result.channelCount, 4);
+
+      final first = result.channels[0];
+      expect(first.name, 'CCTV1');
+      expect(first.groupTitle, '央视频道');
+      // The `$label` suffix is stripped from the stream URL.
+      expect(first.streamUrl, 'http://223.247.25.207:1234/608807420');
+
+      // Duplicate names get disambiguated IDs.
+      final ids = result.channels.map((c) => c.id).toSet();
+      expect(ids.length, 4);
+    });
+
+    test('supports multiple groups', () {
+      const content = '''央视频道,#genre#
+CCTV1,http://host/1
+卫视频道,#genre#
+湖南卫视,http://host/2
+''';
+
+      final result = parser.parse(content, providerId: 'p1');
+      expect(result.channelCount, 2);
+      expect(result.channels[0].groupTitle, '央视频道');
+      expect(result.channels[1].name, '湖南卫视');
+      expect(result.channels[1].groupTitle, '卫视频道');
+    });
+
+    test('handles channels before any group header', () {
+      const content = '''CCTV1,http://host/1
+''';
+
+      final result = parser.parse(content, providerId: 'p1');
+      expect(result.channelCount, 1);
+      expect(result.channels[0].groupTitle, isNull);
+      expect(result.channels[0].streamUrl, 'http://host/1');
+    });
+
+    test('keeps the URL when there is no \$ suffix', () {
+      const content = '''群组,#genre#
+Ch,http://host/stream.m3u8
+''';
+
+      final result = parser.parse(content, providerId: 'p1');
+      expect(result.channels[0].streamUrl, 'http://host/stream.m3u8');
+    });
+  });
 }

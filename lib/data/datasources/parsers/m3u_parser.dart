@@ -16,9 +16,127 @@ M3uResult parseM3uInBackground((String, String) args) {
 /// - Xtream Codes style attributes (tvg-chno, tvg-shift)
 /// - Multiple URL formats (HTTP, HTTPS, RTMP, RTSP, UDP)
 /// - EPG URL extraction from #EXTM3U url-tvg attribute
+/// - Comma-separated "TXT" playlists where each line is `name,url` and group
+///   headers look like `<group>,#genre#`
 class M3uParser {
-  /// Parse M3U content from a string.
+  /// Parse playlist content from a string.
+  ///
+  /// Automatically detects whether the content is a standard M3U/M3U Plus
+  /// playlist or a comma-separated "TXT" playlist and dispatches accordingly.
   M3uResult parse(String content, {required String providerId}) {
+    if (_isTxtGenreFormat(content)) {
+      return _parseTxtGenre(content, providerId: providerId);
+    }
+    return _parseM3u(content, providerId: providerId);
+  }
+
+  /// Detect the comma-separated "TXT" playlist format.
+  ///
+  /// This format has no `#EXTM3U`/`#EXTINF` directives; instead each line is
+  /// `name,url` and group headers are `<group>,#genre#`. We treat content as
+  /// TXT when it contains no M3U directives but has at least one comma-separated
+  /// line (a `#genre#` header or a `name,url` entry).
+  bool _isTxtGenreFormat(String content) {
+    final lines = content.split(RegExp(r'\r?\n'));
+    var sawCommaLine = false;
+    for (final raw in lines) {
+      final line = raw.trim();
+      if (line.isEmpty) continue;
+      // Any real M3U directive means this is not the TXT format.
+      if (line.startsWith('#EXTM3U') ||
+          line.startsWith('#EXTINF') ||
+          line.startsWith('#EXTGRP')) {
+        return false;
+      }
+      if (line.startsWith('#')) continue;
+      if (line.contains(',')) sawCommaLine = true;
+    }
+    return sawCommaLine;
+  }
+
+  /// Parse the comma-separated "TXT" playlist format.
+  ///
+  /// - `<group>,#genre#` sets the current group for subsequent channels.
+  /// - `<name>,<url>` defines a channel. The URL may carry a `$label` suffix
+  ///   (e.g. `http://host/id$安徽电信`); everything before the first `$` is used
+  ///   as the stream URL.
+  M3uResult _parseTxtGenre(String content, {required String providerId}) {
+    final lines = content.split(RegExp(r'\r?\n'));
+    final channels = <Channel>[];
+    final errors = <String>[];
+    final idCounts = <String, int>{};
+
+    String? currentGroup;
+    int order = 0;
+
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i].trim();
+      if (line.isEmpty) continue;
+      if (line.startsWith('#')) continue;
+
+      final commaIndex = line.indexOf(',');
+      if (commaIndex == -1) continue;
+
+      final left = line.substring(0, commaIndex).trim();
+      final right = line.substring(commaIndex + 1).trim();
+
+      // Group header: `<group>,#genre#`
+      if (right == '#genre#') {
+        currentGroup = left.isEmpty ? null : left;
+        continue;
+      }
+
+      final name = left;
+      // Strip an optional `$label` suffix from the URL.
+      final dollarIndex = right.indexOf(r'$');
+      final url = dollarIndex == -1 ? right : right.substring(0, dollarIndex).trim();
+
+      if (name.isEmpty || url.isEmpty) {
+        errors.add('Line $i: empty name or url');
+        continue;
+      }
+
+      final channel = _buildTxtChannel(
+        name: name,
+        url: url,
+        group: currentGroup,
+        providerId: providerId,
+        idCounts: idCounts,
+      );
+      channels.add(channel);
+      order++;
+    }
+
+    return M3uResult(channels: channels, errors: errors);
+  }
+
+  Channel _buildTxtChannel({
+    required String name,
+    required String url,
+    required String? group,
+    required String providerId,
+    required Map<String, int> idCounts,
+  }) {
+    final baseId = '${providerId}_${name}_${group ?? ''}';
+    final count = (idCounts[baseId] ?? 0) + 1;
+    idCounts[baseId] = count;
+    final channelId = count == 1 ? baseId : '${baseId}_$count';
+
+    return Channel(
+      id: channelId,
+      providerId: providerId,
+      name: name,
+      groupTitle: _emptyToNull(group),
+      streamUrl: url,
+      streamType: _inferStreamType(
+        group != null ? {'group-title': group} : const {},
+        url,
+      ),
+    );
+  }
+
+  /// Parse M3U content from a string.
+  M3uResult _parseM3u(String content, {required String providerId}) {
     final lines = content.split(RegExp(r'\r?\n'));
     final channels = <Channel>[];
     final errors = <String>[];
