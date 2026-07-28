@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:media_kit/media_kit.dart';
@@ -36,6 +37,16 @@ class PlayerService {
   bool get loadTimedOut => _loadTimedOut;
   final _loadTimeoutController = StreamController<bool>.broadcast();
 
+  // ── Black-frame recovery ────────────────────────────────────────────────
+  /// How long to allow for the first video frame before assuming the hardware
+  /// decoder is not going to produce one.
+  static const _blackFrameGrace = Duration(seconds: 6);
+  Timer? _blackFrameTimer;
+
+  /// URL that already fell back to software decoding, so the watchdog retries
+  /// each stream at most once.
+  String? _swDecodeFallbackUrl;
+
   /// Emits `true` when a stream fails to start playing within [_loadTimeout]
   /// (loading is then stopped), and `false` when a new load begins.
   Stream<bool> get loadTimeoutStream => _loadTimeoutController.stream;
@@ -57,6 +68,7 @@ class PlayerService {
 
   bool _playerReady = false;
   final _playerReadyCompleter = Completer<void>();
+  bool _videoOutputReady = false;
 
   Player get player {
     if (_player == null) {
@@ -96,7 +108,7 @@ class PlayerService {
       // mpv pick the platform HW decoder (d3d11va / videotoolbox / mediacodec)
       // for 4K HEVC; interpolation off + audio video-sync keep first-frame
       // latency low and avoid heavy GPU work that stalls 4K startup.
-      final hwdec = Platform.isAndroid ? 'mediacodec-copy' : 'auto';
+      final hwdec = _hwdec;
       await _set(np, 'hwdec', hwdec);
       await _set(np, 'interpolation', 'no');
       await _set(np, 'video-sync', 'audio');
@@ -121,18 +133,57 @@ class PlayerService {
       player; // ignore: unnecessary_statements
       await _playerReadyCompleter.future;
     }
+    await _ensureVideoOutput();
   }
+
+  /// Attach the video output *before* any media is opened.
+  ///
+  /// media_kit starts mpv with `vid=no` ("prevent redundant video decoding")
+  /// and only [VideoController] flips it to `vo=libmpv` + `vid=auto` when it is
+  /// constructed. `Player.open()` waits for that handshake, but only once a
+  /// controller exists — so opening a stream before the first `Video` widget
+  /// has been built decodes audio only and leaves the output black. Switching
+  /// `vid` afterwards does not reliably re-attach a hardware-decoded video
+  /// track (HEVC especially), so the frame never appears.
+  ///
+  /// Creating the controller here makes every playback path — inline preview,
+  /// fullscreen player, files, VOD — open media with video already wired up.
+  Future<void> _ensureVideoOutput() async {
+    if (_videoOutputReady) return;
+    try {
+      // The getter marks the video output as attached on the player.
+      final controller = videoController;
+      // media_kit defers platform-controller creation to a post-frame
+      // callback, so make sure a frame is actually scheduled.
+      SchedulerBinding.instance.ensureVisualUpdate();
+      await controller.platform.future.timeout(const Duration(seconds: 10));
+      _videoOutputReady = true;
+    } catch (e) {
+      // Never block playback on video-output setup; audio-only is still better
+      // than nothing and the next attempt will retry.
+      debugPrint('[Player] Video output attach failed: $e');
+    }
+  }
+
+  /// The mpv hardware-decoding mode for this platform. Android needs
+  /// `mediacodec-copy` (plain `mediacodec` hands back frames media_kit can't
+  /// map into a Flutter texture); everywhere else `auto` lets mpv pick
+  /// d3d11va / videotoolbox / vaapi.
+  static String get _hwdec =>
+      Platform.isAndroid ? 'mediacodec-copy' : 'auto';
 
   VideoController get videoController {
     // Configure the video output exactly like the proven-working reference:
-    // hwdec=auto here wires media_kit's hardware video pipeline (ANGLE/D3D11
-    // on Windows, VideoToolbox on Apple) to the GPU HEVC decoder. Setting it
-    // on the controller — not just as a bare mpv property — is what makes 4K
-    // HEVC frames actually reach the texture.
+    // hwdec here wires media_kit's hardware video pipeline (ANGLE/D3D11 on
+    // Windows, VideoToolbox on Apple) to the GPU HEVC decoder. Setting it on
+    // the controller — not just as a bare mpv property — is what makes 4K HEVC
+    // frames actually reach the texture. The controller re-applies `hwdec`
+    // when it attaches, so it must carry the same value as `_initPlayer` or it
+    // would silently override it.
     _videoController ??= VideoController(
       player,
-      configuration: const VideoControllerConfiguration(
-        hwdec: 'auto',
+      configuration: VideoControllerConfiguration(
+        hwdec: _hwdec,
         enableHardwareAcceleration: true,
       ),
     );
@@ -149,11 +200,19 @@ class PlayerService {
     String? vanityName,
     String? originalName,
   }) async {
+    // An empty URL would make mpv tear down the current video output and show
+    // a black screen. Ignore it so an incompletely-configured caller can't
+    // kill playback that is already running.
+    if (url.trim().isEmpty) {
+      debugPrint('[Player] Ignoring play() with empty URL');
+      return;
+    }
     _currentUrl = url;
     _currentChannelId = channelId;
     _tracksSub?.cancel();
     try {
       await _ensureReady();
+      await _restoreHardwareDecoding();
       // Open immediately with the live-tuned buffer tier (primes a small
       // initial buffer; also the right profile for heavy streams). We do NOT
       // block playback on the live-detection HTTP probe — that added several
@@ -233,6 +292,7 @@ class PlayerService {
         _loadStartSub = null;
       }
     });
+    _armBlackFrameWatchdog();
     _loadTimeoutTimer = Timer(_loadTimeout, () {
       // Already playing smoothly → not a timeout.
       if (_playbackStarted ||
@@ -256,9 +316,64 @@ class PlayerService {
     _loadTimeoutTimer = null;
     _loadStartSub?.cancel();
     _loadStartSub = null;
+    _blackFrameTimer?.cancel();
+    _blackFrameTimer = null;
     if (_loadTimedOut) {
       _loadTimedOut = false;
       _loadTimeoutController.add(false);
+    }
+  }
+
+  /// Detect "audio plays but the picture is black".
+  ///
+  /// Some hardware decoders (notably d3d11va with 10-bit HEVC) accept the
+  /// stream and then never deliver a mappable frame: mpv reports playback and
+  /// audio is fine, but `dwidth`/`dheight` stay empty so the texture has
+  /// nothing to show. Recover once by falling back to software decoding for
+  /// this stream instead of leaving the user on a black screen.
+  void _armBlackFrameWatchdog() {
+    _blackFrameTimer?.cancel();
+    final url = _currentUrl;
+    if (url == null) return;
+    _blackFrameTimer = Timer(_blackFrameGrace, () async {
+      if (_currentUrl != url || _swDecodeFallbackUrl == url) return;
+      // Only act when audio is genuinely progressing — otherwise this is an
+      // ordinary connection problem and the load timeout owns it.
+      if (!player.state.playing) return;
+      final hasVideoTrack = player.state.tracks.video
+          .any((t) => t.id != 'no' && t.id != 'auto');
+      if (!hasVideoTrack) return; // audio-only stream: black is correct
+      final w = player.state.width ?? 0;
+      final h = player.state.height ?? 0;
+      if (w > 0 && h > 0) return; // frames are flowing
+
+      debugPrint(
+        '[Player] Video track present but no frames — '
+        'retrying with software decoding',
+      );
+      _swDecodeFallbackUrl = url;
+      final np = player.platform;
+      if (np is native_player.NativePlayer) {
+        await _set(np, 'hwdec', 'no');
+      }
+      if (_currentUrl != url) return;
+      try {
+        await player.open(Media(url));
+        await player.setVolume(100.0);
+      } catch (e) {
+        debugPrint('[Player] Software-decode retry failed: $e');
+      }
+    });
+  }
+
+  /// Restore hardware decoding for a newly selected stream after a previous
+  /// stream had to fall back to software decoding.
+  Future<void> _restoreHardwareDecoding() async {
+    if (_swDecodeFallbackUrl == null) return;
+    _swDecodeFallbackUrl = null;
+    final np = player.platform;
+    if (np is native_player.NativePlayer) {
+      await _set(np, 'hwdec', _hwdec);
     }
   }
 
@@ -472,6 +587,7 @@ class PlayerService {
       _completedSub?.cancel();
       _bufferTrackTimer?.cancel();
       _loadTimeoutTimer?.cancel();
+      _blackFrameTimer?.cancel();
       _loadStartSub?.cancel();
       _loadTimeoutController.close();
       _player?.dispose();

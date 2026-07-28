@@ -1086,6 +1086,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
         'alternativeUrls': <String>[],
         'channels': channelMaps,
         'currentIndex': _selectedIndex >= 0 ? _selectedIndex : 0,
+        'startFullscreen': true,
       },
     );
   }
@@ -3459,7 +3460,17 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     if (picked != null && mounted) {
       final playerService = ref.read(playerServiceProvider);
       await playerService.play(picked);
-      if (mounted) context.push('/player');
+      // Pass the URL through so PlayerScreen doesn't restart playback with an
+      // empty `streamUrl` (which blanks the video output).
+      if (mounted) {
+        context.push(
+          '/player',
+          extra: {
+            'streamUrl': picked,
+            'channelName': picked.split(Platform.pathSeparator).last,
+          },
+        );
+      }
     }
   }
 
@@ -3470,9 +3481,18 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       dialogTitle: 'Choose a video file',
     );
     if (result != null && result.files.single.path != null && mounted) {
+      final path = result.files.single.path!;
       final playerService = ref.read(playerServiceProvider);
-      await playerService.play(result.files.single.path!);
-      if (mounted) context.push('/player');
+      await playerService.play(path);
+      if (mounted) {
+        context.push(
+          '/player',
+          extra: {
+            'streamUrl': path,
+            'channelName': result.files.single.name,
+          },
+        );
+      }
     }
   }
 
@@ -3973,12 +3993,6 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                           rawPressed.contains(LogicalKeyboardKey.shiftRight) ||
                           rawPressed.contains(LogicalKeyboardKey.metaLeft) ||
                           rawPressed.contains(LogicalKeyboardKey.metaRight);
-                      try {
-                        File('/tmp/click_debug.log').writeAsStringSync(
-                          '${DateTime.now()} TAP ch=${channel.name} shift=$shiftOrCmd multiMode=$_multiSelectMode hw=${hwPressed.map((k) => k.debugName).join(",")} raw=${rawPressed.map((k) => k.debugName).join(",")}\n',
-                          mode: FileMode.append,
-                        );
-                      } catch (_) {}
                       if (shiftOrCmd) {
                         // Shift/Cmd+click: toggle multi-select
                         setState(() {

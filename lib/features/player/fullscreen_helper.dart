@@ -31,6 +31,16 @@ class FullscreenHelper {
     }
   }
 
+  /// Toggle fullscreen, returning the state after the toggle.
+  static Future<bool> toggleFullscreen() async {
+    if (_isFullscreen) {
+      exitFullscreen();
+      return false;
+    }
+    await enterFullscreen();
+    return true;
+  }
+
   /// Exit fullscreen and restore normal window/orientation.
   /// Uses a post-frame callback on desktop to avoid conflicts with widget disposal.
   static void exitFullscreen() {

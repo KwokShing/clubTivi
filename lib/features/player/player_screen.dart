@@ -31,6 +31,12 @@ class PlayerScreen extends ConsumerStatefulWidget {
   final List<Map<String, dynamic>> channels;
   final int currentIndex;
 
+  /// Whether to enter OS-level fullscreen as soon as the player opens.
+  /// Only the explicit "go fullscreen" action sets this — opening a file, a
+  /// recording or a VOD stream stays windowed so the user decides when (and
+  /// whether) to go fullscreen.
+  final bool startFullscreen;
+
   const PlayerScreen({
     super.key,
     required this.streamUrl,
@@ -39,6 +45,7 @@ class PlayerScreen extends ConsumerStatefulWidget {
     this.alternativeUrls = const [],
     this.channels = const [],
     this.currentIndex = 0,
+    this.startFullscreen = false,
   });
 
   @override
@@ -51,6 +58,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   bool _showChannelList = false;
   Offset? _lastMousePosition;
   bool _isFavorite = false;
+  // Tracks whether this screen currently has the window in fullscreen, so the
+  // toggle can restore the windowed state and dispose only undoes what it did.
+  bool _isFullscreen = false;
   // When enabled in Settings, show the current stream URL over the video.
   bool _showStreamUrl = false;
 
@@ -103,8 +113,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           .read(streamAlternativesProvider)
           .providerName(ch['providerId']?.toString() ?? '');
     }
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    FullscreenHelper.enterFullscreen();
+    if (widget.startFullscreen) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      FullscreenHelper.enterFullscreen();
+    }
+    _isFullscreen = widget.startFullscreen;
     _startPlayback();
     _loadEpgInfo();
     _loadFavoriteState();
@@ -256,15 +269,26 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   void _startPlayback() {
     final playerService = ref.read(playerServiceProvider);
     final urls = [widget.streamUrl, ...widget.alternativeUrls];
+    final requested = urls[_currentUrlIndex];
 
-    // If channels list is empty, this is a show/VOD stream — always start fresh
-    final isShowStream = widget.channels.isEmpty;
+    // Nothing to open — the caller navigated here without a URL. Keep whatever
+    // the shared player is already showing instead of opening an empty media,
+    // which would tear down the video output and leave a black screen.
+    if (requested.isEmpty) {
+      _attachTrackListener(playerService);
+      return;
+    }
 
-    if (isShowStream ||
-        !(playerService.player.state.playing ||
-            playerService.player.state.buffering)) {
+    // Reuse the already-running stream only when it is the one we were asked
+    // for; otherwise (a different channel, or a VOD/file) start it fresh.
+    final alreadyPlayingRequested =
+        playerService.currentUrl == requested &&
+        (playerService.player.state.playing ||
+            playerService.player.state.buffering);
+
+    if (!alreadyPlayingRequested) {
       playerService.play(
-        urls[_currentUrlIndex],
+        requested,
         channelId: widget.channels.isNotEmpty
             ? widget.channels[_channelIndex]['id'] as String?
             : null,
@@ -284,9 +308,13 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       );
     }
 
-    // Load track info once tracks become available. Cancel any previous
-    // subscription first so re-entry (e.g. channel switch) doesn't stack
-    // listeners on the singleton player.
+    _attachTrackListener(playerService);
+  }
+
+  /// Load track info once tracks become available. Cancels any previous
+  /// subscription first so re-entry (e.g. channel switch) doesn't stack
+  /// listeners on the singleton player.
+  void _attachTrackListener(PlayerService playerService) {
     _tracksSub?.cancel();
     _tracksSub = playerService.player.stream.tracks.listen((tracks) {
       if (mounted) _loadTrackInfo();
@@ -540,12 +568,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final key = event.logicalKey;
     final isAndroid = Platform.isAndroid;
 
-    // Escape / Backspace / Back → close channel list first, then exit
+    // Escape / Backspace / Back → leave fullscreen first, then close the
+    // channel list, then exit the player. Escape should never drop the user out
+    // of the app while the window is still fullscreen.
     if (key == LogicalKeyboardKey.escape ||
         key == LogicalKeyboardKey.backspace ||
         key == LogicalKeyboardKey.goBack) {
       if (_showChannelList) {
         setState(() => _showChannelList = false);
+        return KeyEventResult.handled;
+      }
+      if (_isFullscreen) {
+        _toggleFullscreen();
         return KeyEventResult.handled;
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -554,6 +588,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
             ? GoRouter.of(context).pop()
             : GoRouter.of(context).go('/');
       });
+      return KeyEventResult.handled;
+    }
+
+    // F / F11 → toggle fullscreen
+    if (key == LogicalKeyboardKey.f11 || key == LogicalKeyboardKey.keyF) {
+      _toggleFullscreen();
       return KeyEventResult.handled;
     }
 
@@ -590,6 +630,14 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     }
 
     return KeyEventResult.ignored;
+  }
+
+  Future<void> _toggleFullscreen() async {
+    final nowFullscreen = await FullscreenHelper.toggleFullscreen();
+    SystemChrome.setEnabledSystemUIMode(
+      nowFullscreen ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+    );
+    if (mounted) setState(() => _isFullscreen = nowFullscreen);
   }
 
   void _switchChannel(int delta) {
@@ -639,8 +687,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _tracksSub?.cancel();
     _overlayTimer?.cancel();
     _volumeTimer?.cancel();
-    FullscreenHelper.exitFullscreen();
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    if (_isFullscreen) {
+      FullscreenHelper.exitFullscreen();
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
     super.dispose();
   }
 
@@ -668,12 +718,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           },
           child: GestureDetector(
             onTap: _toggleOverlay,
-            onDoubleTap: () {
-              // Exit fullscreen is handled in dispose; just navigate back
-              GoRouter.of(context).canPop()
-                  ? GoRouter.of(context).pop()
-                  : GoRouter.of(context).go('/');
-            },
+            onDoubleTap: _toggleFullscreen,
             // Transient, fast-toggling video overlays (control bar, info banner,
             // volume popup) constantly add/remove subtrees. On Windows this
             // churns the semantics tree and spams accessibility_bridge with
@@ -804,6 +849,8 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   onSettings: () => GoRouter.of(context).push('/settings'),
                   onChannelList: () =>
                       setState(() => _showChannelList = !_showChannelList),
+                  onFullscreenToggle: _toggleFullscreen,
+                  isFullscreen: _isFullscreen,
                 ),
 
                 // Stream URL bar (enabled via Settings → Show Stream URL).

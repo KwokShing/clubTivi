@@ -23,6 +23,8 @@ class PlayerControlBar extends ConsumerStatefulWidget {
   final VoidCallback? onSubtitleToggle;
   final VoidCallback? onSubtitleSelect;
   final VoidCallback? onAudioSelect;
+  final VoidCallback? onFullscreenToggle;
+  final bool isFullscreen;
   final bool isCasting;
   final bool isFavorite;
   final bool hasSubtitles;
@@ -55,6 +57,8 @@ class PlayerControlBar extends ConsumerStatefulWidget {
     this.onSubtitleToggle,
     this.onSubtitleSelect,
     this.onAudioSelect,
+    this.onFullscreenToggle,
+    this.isFullscreen = false,
     this.isCasting = false,
     this.isFavorite = false,
     this.hasSubtitles = false,
@@ -444,6 +448,18 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
                           onTap: widget.onSettings),
                       _iconBtn(Icons.list,
                           onTap: widget.onChannelList),
+                      if (widget.onFullscreenToggle != null)
+                        Tooltip(
+                          message: widget.isFullscreen
+                              ? 'Exit fullscreen (F)'
+                              : 'Fullscreen (F)',
+                          child: _iconBtn(
+                            widget.isFullscreen
+                                ? Icons.fullscreen_exit
+                                : Icons.fullscreen,
+                            onTap: widget.onFullscreenToggle,
+                          ),
+                        ),
                       _badge('EPG', fontSize: 10),
                       const SizedBox(width: 6),
                       Tooltip(
