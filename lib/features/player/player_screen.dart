@@ -568,9 +568,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     final key = event.logicalKey;
     final isAndroid = Platform.isAndroid;
 
-    // Escape / Backspace / Back → leave fullscreen first, then close the
-    // channel list, then exit the player. Escape should never drop the user out
-    // of the app while the window is still fullscreen.
+    // Escape / Backspace / Back → close the channel list first, then leave
+    // fullscreen (for a windowed player), then exit the player. Escape should
+    // never drop the user out of the app while the window is still fullscreen.
     if (key == LogicalKeyboardKey.escape ||
         key == LogicalKeyboardKey.backspace ||
         key == LogicalKeyboardKey.goBack) {
@@ -578,16 +578,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         setState(() => _showChannelList = false);
         return KeyEventResult.handled;
       }
-      if (_isFullscreen) {
+      if (_isFullscreen && !widget.startFullscreen) {
         _toggleFullscreen();
         return KeyEventResult.handled;
       }
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        GoRouter.of(context).canPop()
-            ? GoRouter.of(context).pop()
-            : GoRouter.of(context).go('/');
-      });
+      _exitPlayer();
       return KeyEventResult.handled;
     }
 
@@ -632,12 +627,34 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     return KeyEventResult.ignored;
   }
 
+  /// Leave the player route, restoring the window in [dispose].
+  void _exitPlayer() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      GoRouter.of(context).canPop()
+          ? GoRouter.of(context).pop()
+          : GoRouter.of(context).go('/');
+    });
+  }
+
   Future<void> _toggleFullscreen() async {
-    final nowFullscreen = await FullscreenHelper.toggleFullscreen();
-    SystemChrome.setEnabledSystemUIMode(
-      nowFullscreen ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
-    );
-    if (mounted) setState(() => _isFullscreen = nowFullscreen);
+    if (_isFullscreen) {
+      // This route was opened *as* the fullscreen presentation of a channel,
+      // so its windowed form is the small inline preview on the screen below —
+      // not a player stretched across the whole app window. Leaving fullscreen
+      // therefore means going back; dispose() restores the window size.
+      if (widget.startFullscreen) {
+        _exitPlayer();
+        return;
+      }
+      FullscreenHelper.exitFullscreen();
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      if (mounted) setState(() => _isFullscreen = false);
+      return;
+    }
+    await FullscreenHelper.enterFullscreen();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    if (mounted) setState(() => _isFullscreen = true);
   }
 
   void _switchChannel(int delta) {
@@ -836,11 +853,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                   audioTrackCount: _audioTracks.length,
                   onAudioSelect: _showAudioPicker,
                   onCastTap: () => _showCastPicker(),
-                  onBackTap: () {
-                    GoRouter.of(context).canPop()
-                        ? GoRouter.of(context).pop()
-                        : GoRouter.of(context).go('/');
-                  },
+                  onBackTap: _exitPlayer,
                   onScreenshot: _takeScreenshot,
                   onFavorite: _toggleFavorite,
                   onPip: _enterPip,
