@@ -114,7 +114,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           .providerName(ch['providerId']?.toString() ?? '');
     }
     if (widget.startFullscreen) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       FullscreenHelper.enterFullscreen();
     }
     _isFullscreen = widget.startFullscreen;
@@ -648,12 +647,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         return;
       }
       FullscreenHelper.exitFullscreen();
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       if (mounted) setState(() => _isFullscreen = false);
       return;
     }
     await FullscreenHelper.enterFullscreen();
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     if (mounted) setState(() => _isFullscreen = true);
   }
 
@@ -706,7 +703,6 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _volumeTimer?.cancel();
     if (_isFullscreen) {
       FullscreenHelper.exitFullscreen();
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     super.dispose();
   }

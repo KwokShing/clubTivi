@@ -3458,19 +3458,11 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       ),
     );
     if (picked != null && mounted) {
-      final playerService = ref.read(playerServiceProvider);
-      await playerService.play(picked);
-      // Pass the URL through so PlayerScreen doesn't restart playback with an
-      // empty `streamUrl` (which blanks the video output).
-      if (mounted) {
-        context.push(
-          '/player',
-          extra: {
-            'streamUrl': picked,
-            'channelName': picked.split(Platform.pathSeparator).last,
-          },
-        );
-      }
+      // Play in the inline preview, exactly like "Play / Add URL" — pushing the
+      // standalone player instead would present a fullscreen route, which on a
+      // phone in portrait becomes a letterboxed page rather than the normal
+      // preview-over-list layout.
+      _playTransientUrl(picked, picked.split(Platform.pathSeparator).last);
     }
   }
 
@@ -3481,18 +3473,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
       dialogTitle: 'Choose a video file',
     );
     if (result != null && result.files.single.path != null && mounted) {
-      final path = result.files.single.path!;
-      final playerService = ref.read(playerServiceProvider);
-      await playerService.play(path);
-      if (mounted) {
-        context.push(
-          '/player',
-          extra: {
-            'streamUrl': path,
-            'channelName': result.files.single.name,
-          },
-        );
-      }
+      _playTransientUrl(result.files.single.path!, result.files.single.name);
     }
   }
 
@@ -3600,15 +3581,17 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     _playTransientUrl(url, name);
   }
 
-  /// Play a one-off URL in the inline preview using a transient channel, so it
-  /// behaves like selecting a channel (small-screen) rather than fullscreen.
+  /// Play a one-off URL or local file in the inline preview using a transient
+  /// channel, so it behaves like selecting a channel (small-screen) rather than
+  /// opening the fullscreen player route.
   void _playTransientUrl(String url, String name) {
+    final isLocalFile = !url.contains('://');
     final channel = db.Channel(
       id: 'oneoff_${DateTime.now().microsecondsSinceEpoch}',
       providerId: 'oneoff',
       name: name.isEmpty ? url : name,
       streamUrl: url,
-      streamType: 'live',
+      streamType: isLocalFile ? 'vod' : 'live',
       favorite: false,
       hidden: false,
       sortOrder: 0,

@@ -25,7 +25,13 @@ class FullscreenHelper {
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      // `immersiveSticky` is an Android-only mode; on iOS it leaves the status
+      // bar drawn (and garbled across a rotation). Hiding every overlay via
+      // `manual` is the supported way to get a true fullscreen surface.
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.manual,
+        overlays: const [],
+      );
     } else if (Platform.isAndroid) {
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     }
@@ -49,7 +55,10 @@ class FullscreenHelper {
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.manual,
+        overlays: SystemUiOverlay.values,
+      );
     } else if (Platform.isAndroid) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
