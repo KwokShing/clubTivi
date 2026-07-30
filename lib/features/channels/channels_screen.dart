@@ -102,6 +102,11 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   bool _showPreviewControls = false;
   Timer? _previewControlsTimer;
 
+  // Inline preview seek bar: while the user drags the thumb we stop following
+  // the player position stream so the thumb doesn't jump back under the finger.
+  bool _previewSeeking = false;
+  double _previewSeekValue = 0.0;
+
   // Last channel for back/forth toggle (not a full history stack)
   int _previousIndex = -1;
 
@@ -1678,6 +1683,14 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
     });
   }
 
+  /// `h:mm:ss` (hours dropped when zero) for the inline preview seek bar.
+  String _formatPreviewTime(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
 
   // ---------------------------------------------------------------------------
   // Build
@@ -2666,7 +2679,9 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                     ),
                   ),
                 ),
-                // ── Bottom: play bar ──
+                // ── Right: vertical volume bar ──
+                _buildPreviewVolumeBar(playerService),
+                // ── Bottom: seek bar + play bar ──
                 Align(
                   alignment: Alignment.bottomCenter,
                   child: Container(
@@ -2679,85 +2694,64 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
                         colors: [Colors.black87, Colors.transparent],
                       ),
                     ),
-                    child: Row(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Play / pause
-                        StreamBuilder<bool>(
-                          stream: playerService.player.stream.playing,
-                          initialData: playerService.player.state.playing,
-                          builder: (context, snapshot) {
-                            final playing = snapshot.data ?? false;
-                            return _previewIconBtn(
-                              playing ? Icons.pause : Icons.play_arrow,
+                        // Draggable playback progress
+                        _buildPreviewSeekBar(playerService),
+                        Row(
+                          children: [
+                            // Play / pause
+                            StreamBuilder<bool>(
+                              stream: playerService.player.stream.playing,
+                              initialData: playerService.player.state.playing,
+                              builder: (context, snapshot) {
+                                final playing = snapshot.data ?? false;
+                                return _previewIconBtn(
+                                  playing ? Icons.pause : Icons.play_arrow,
+                                  onTap: () {
+                                    playing
+                                        ? playerService.pause()
+                                        : playerService.resume();
+                                    _scheduleHidePreviewControls();
+                                  },
+                                );
+                              },
+                            ),
+                            // Mute toggle — the level itself is set with the
+                            // vertical bar on the right edge of the video.
+                            _previewIconBtn(
+                              _volume == 0
+                                  ? Icons.volume_off
+                                  : _volume < 50
+                                  ? Icons.volume_down
+                                  : Icons.volume_up,
                               onTap: () {
-                                playing
-                                    ? playerService.pause()
-                                    : playerService.resume();
-                                _scheduleHidePreviewControls();
-                              },
-                            );
-                          },
-                        ),
-                        // Mute toggle
-                        _previewIconBtn(
-                          _volume == 0
-                              ? Icons.volume_off
-                              : _volume < 50
-                              ? Icons.volume_down
-                              : Icons.volume_up,
-                          onTap: () {
-                            final newVol = _volume > 0 ? 0.0 : 100.0;
-                            setState(() => _volume = newVol);
-                            playerService.setVolume(newVol);
-                            _scheduleHidePreviewControls();
-                          },
-                        ),
-                        // Volume slider
-                        SizedBox(
-                          width: 90,
-                          height: 24,
-                          child: SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              trackHeight: 2,
-                              thumbShape: const RoundSliderThumbShape(
-                                enabledThumbRadius: 5,
-                              ),
-                              overlayShape: const RoundSliderOverlayShape(
-                                overlayRadius: 10,
-                              ),
-                              activeTrackColor: Colors.white,
-                              inactiveTrackColor: Colors.white30,
-                              thumbColor: Colors.white,
-                            ),
-                            child: Slider(
-                              value: _volume,
-                              min: 0,
-                              max: 100,
-                              onChanged: (v) {
-                                setState(() => _volume = v);
-                                playerService.setVolume(v);
+                                final newVol = _volume > 0 ? 0.0 : 100.0;
+                                setState(() => _volume = newVol);
+                                playerService.setVolume(newVol);
                                 _scheduleHidePreviewControls();
                               },
                             ),
-                          ),
-                        ),
-                        const Spacer(),
-                        // Stop playback
-                        _previewIconBtn(
-                          Icons.stop_rounded,
-                          onTap: () {
-                            ref.read(playerServiceProvider).stop();
-                            _previewControlsTimer?.cancel();
-                            setState(() {
-                              _previewChannel = null;
-                              _showPreviewControls = false;
-                            });
-                          },
-                        ),
-                        // Fullscreen
-                        _previewIconBtn(
-                          Icons.fullscreen_rounded,
-                          onTap: () => _goFullscreen(channel),
+                            const Spacer(),
+                            // Stop playback
+                            _previewIconBtn(
+                              Icons.stop_rounded,
+                              onTap: () {
+                                ref.read(playerServiceProvider).stop();
+                                _previewControlsTimer?.cancel();
+                                setState(() {
+                                  _previewChannel = null;
+                                  _showPreviewControls = false;
+                                });
+                              },
+                            ),
+                            // Fullscreen
+                            _previewIconBtn(
+                              Icons.fullscreen_rounded,
+                              onTap: () => _goFullscreen(channel),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -2767,6 +2761,169 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  /// Draggable playback progress bar for the inline (portrait) preview player.
+  ///
+  /// Live streams report a zero duration, so those get a static bar with a
+  /// `LIVE` marker instead of a slider that could never be seeked.
+  Widget _buildPreviewSeekBar(dynamic playerService) {
+    const labelStyle = TextStyle(color: Colors.white70, fontSize: 11);
+
+    return StreamBuilder<Duration>(
+      stream: playerService.durationStream,
+      initialData: playerService.player.state.duration,
+      builder: (context, durationSnapshot) {
+        final duration = durationSnapshot.data ?? Duration.zero;
+        final maxMs = duration.inMilliseconds.toDouble();
+        final isLive = maxMs <= 0;
+
+        return StreamBuilder<Duration>(
+          stream: playerService.positionStream,
+          initialData: playerService.player.state.position,
+          builder: (context, positionSnapshot) {
+            final posMs = (positionSnapshot.data ?? Duration.zero)
+                .inMilliseconds
+                .toDouble();
+            final rawValue = _previewSeeking ? _previewSeekValue : posMs;
+            final value = isLive ? rawValue : rawValue.clamp(0.0, maxMs);
+
+            return Row(
+              children: [
+                Text(
+                  _formatPreviewTime(Duration(milliseconds: value.round())),
+                  style: labelStyle,
+                ),
+                Expanded(
+                  child: SizedBox(
+                    height: 22,
+                    child: isLive
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            child: Center(
+                              child: Container(
+                                height: 3,
+                                decoration: BoxDecoration(
+                                  color: Colors.white24,
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                              ),
+                            ),
+                          )
+                        : SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 3,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 6,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 12,
+                              ),
+                              activeTrackColor: const Color(0xFF6C5CE7),
+                              inactiveTrackColor: Colors.white24,
+                              thumbColor: Colors.white,
+                            ),
+                            child: Slider(
+                              value: value,
+                              min: 0,
+                              max: maxMs,
+                              onChangeStart: (v) {
+                                _previewControlsTimer?.cancel();
+                                setState(() {
+                                  _previewSeeking = true;
+                                  _previewSeekValue = v;
+                                });
+                              },
+                              onChanged: (v) =>
+                                  setState(() => _previewSeekValue = v),
+                              onChangeEnd: (v) {
+                                playerService.player.seek(
+                                  Duration(milliseconds: v.round()),
+                                );
+                                setState(() => _previewSeeking = false);
+                                _scheduleHidePreviewControls();
+                              },
+                            ),
+                          ),
+                  ),
+                ),
+                isLive
+                    ? const Text(
+                        'LIVE',
+                        style: TextStyle(
+                          color: Color(0xFFFF6B6B),
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.5,
+                        ),
+                      )
+                    : Text(_formatPreviewTime(duration), style: labelStyle),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Vertical volume bar pinned to the right edge of the inline preview.
+  ///
+  /// Sized from the space left between the top info gradient and the bottom
+  /// play bar, and skipped entirely when the preview is too short for it.
+  Widget _buildPreviewVolumeBar(dynamic playerService) {
+    const barBottomInset = 82.0;
+    const topGradientInset = 44.0;
+
+    return Align(
+      alignment: Alignment.bottomRight,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final available =
+              constraints.maxHeight - barBottomInset - topGradientInset;
+          if (available < 56) return const SizedBox.shrink();
+          final trackLength = available.clamp(56.0, 130.0);
+
+          return Padding(
+            padding: const EdgeInsets.only(right: 4, bottom: barBottomInset),
+            child: Container(
+              width: 30,
+              height: trackLength,
+              decoration: BoxDecoration(
+                color: Colors.black38,
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: RotatedBox(
+                quarterTurns: 3,
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 3,
+                    thumbShape: const RoundSliderThumbShape(
+                      enabledThumbRadius: 6,
+                    ),
+                    overlayShape: const RoundSliderOverlayShape(
+                      overlayRadius: 10,
+                    ),
+                    activeTrackColor: Colors.white,
+                    inactiveTrackColor: Colors.white30,
+                    thumbColor: Colors.white,
+                  ),
+                  child: Slider(
+                    value: _volume,
+                    min: 0,
+                    max: 100,
+                    onChanged: (v) {
+                      setState(() => _volume = v);
+                      playerService.setVolume(v);
+                      _scheduleHidePreviewControls();
+                    },
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
