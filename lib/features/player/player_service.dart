@@ -121,6 +121,39 @@ class PlayerService {
       await _set(np, 'interpolation', 'no');
       await _set(np, 'video-sync', 'audio');
 
+      // ── HLS segments with disguised file extensions ───────────────────
+      // Many IPTV CDNs serve HLS segments under harmless-looking extensions
+      // (`.jpg`, `.txt`, `.png`) to slip past hotlink filters and caching
+      // proxies. FFmpeg's HLS demuxer refuses those by default — twice over:
+      // once when parsing the playlist ("not in allowed_segment_extensions")
+      // and again when the probed container doesn't match the URL extension.
+      // Every rendition then fails to load and the stream opens with zero
+      // tracks, which surfaces as "this channel won't play".
+      //
+      // The option to relax this was renamed twice, so all three spellings
+      // are passed and whichever the bundled FFmpeg doesn't know is ignored:
+      //   - `allowed_extensions`         FFmpeg <= 7.0 (the only check then)
+      //   - `allowed_segment_extensions` renamed in FFmpeg 8
+      //   - `extension_picky=0`          FFmpeg 7.1+, disables both checks
+      // media_kit 1.2.6 currently bundles mpv 0.36 / libavformat 60 (FFmpeg
+      // 6.0), where only the playlist check exists and `allowed_extensions`
+      // is the one that applies; the others are kept so this keeps working if
+      // media_kit upgrades its FFmpeg.
+      //
+      // Trade-off: these checks exist to stop a hostile playlist from naming
+      // a local file as a "segment". Playlists come from providers the user
+      // added themselves, and the demuxer's protocol whitelist still applies,
+      // so the exposure is limited to sources the user already trusts to
+      // stream video. Without this, a large share of real-world IPTV simply
+      // cannot play.
+      await _set(
+        np,
+        'demuxer-lavf-o',
+        'extension_picky=0,'
+            'allowed_segment_extensions=ALL,'
+            'allowed_extensions=ALL',
+      );
+
       // ── Audio normalization (app feature, audio-only) ─────────────────
       // Best-effort: these shape audio output only and never block video.
       await _set(np, 'audio-channels', 'stereo');
