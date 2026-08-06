@@ -376,20 +376,49 @@ class _PlayerControlBarState extends ConsumerState<PlayerControlBar> {
                       const Spacer(),
 
                       // ── Right side icons ──
-                      // CC (subtitle) toggle + long-press picker
-                      GestureDetector(
-                        onTap: widget.onSubtitleToggle,
-                        onLongPress: widget.onSubtitleSelect,
-                        child: Padding(
-                          padding: const EdgeInsets.all(6),
-                          child: Icon(
-                            widget.subtitlesEnabled
-                                ? Icons.closed_caption
-                                : Icons.closed_caption_disabled,
-                            color: widget.subtitlesEnabled
-                                ? Colors.white
-                                : Colors.white38,
-                            size: 20,
+                      // CC (subtitle) toggle; long-press opens the track and
+                      // styling picker. InkWell (not GestureDetector) so the
+                      // button takes D-pad focus like its neighbours.
+                      Tooltip(
+                        message: widget.subtitlesEnabled
+                            ? 'Subtitles on — long press for options'
+                            : 'Subtitles off — long press for options',
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: widget.onSubtitleToggle,
+                          onLongPress: widget.onSubtitleSelect,
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: Icon(
+                                  widget.subtitlesEnabled
+                                      ? Icons.closed_caption
+                                      : Icons.closed_caption_disabled,
+                                  color: widget.subtitlesEnabled
+                                      ? Colors.white
+                                      : Colors.white38,
+                                  size: 20,
+                                ),
+                              ),
+                              // Hint that tracks exist even while subtitles
+                              // are off, so the button is worth pressing.
+                              if (widget.hasSubtitles &&
+                                  !widget.subtitlesEnabled)
+                                Positioned(
+                                  right: 2,
+                                  top: 2,
+                                  child: Container(
+                                    width: 6,
+                                    height: 6,
+                                    decoration: const BoxDecoration(
+                                      color: Color(0xFF6C5CE7),
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ),
+                            ],
                           ),
                         ),
                       ),

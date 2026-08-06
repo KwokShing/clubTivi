@@ -131,7 +131,16 @@ class _MultiViewScreenState extends ConsumerState<MultiViewScreen> {
                           ),
                           child: Stack(
                             children: [
-                              Video(controller: cell.controller),
+                              Video(
+                                controller: cell.controller,
+                                // Nine simultaneous subtitle overlays would be
+                                // unreadable noise; multi-view is for
+                                // monitoring, so keep the tiles clean.
+                                subtitleViewConfiguration:
+                                    const SubtitleViewConfiguration(
+                                  visible: false,
+                                ),
+                              ),
                               // Channel label
                               Positioned(
                                 left: 4,

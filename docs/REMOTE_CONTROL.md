@@ -85,6 +85,13 @@ Works on all platforms (desktop + Android with keyboard attached):
 | `Shift + ←` / `Shift + →` | Seek back / forward 30s |
 | `Ctrl + ←` / `Ctrl + →` | Seek back / forward 5 min |
 
+### Subtitles
+| Key | Action |
+|---|---|
+| `C` | Toggle subtitles on / off |
+| `Shift + C` | Subtitle menu — tracks, load file, appearance |
+| `Z` / `X` | Shift subtitle timing 0.5s earlier / later |
+
 ### Navigation
 | Key | Action |
 |---|---|

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path_provider/path_provider.dart';
@@ -20,6 +21,8 @@ import '../channels/channel_debug_dialog.dart';
 import 'player_control_bar.dart';
 import 'player_service.dart';
 import 'stream_info_badges.dart';
+import 'subtitle_settings.dart';
+import 'subtitle_style_sheet.dart';
 import 'fullscreen_helper.dart';
 
 /// Full-screen video player with overlay controls and keyboard navigation.
@@ -95,6 +98,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   List<SubtitleTrack> _subtitleTracks = [];
   List<AudioTrack> _audioTracks = [];
 
+  /// Guards the "enable subtitles automatically" pass so it runs at most once
+  /// per stream. Track lists arrive incrementally while a stream opens, so
+  /// without this the auto-select would fight a user who turns subtitles off.
+  bool _autoSubtitleDone = false;
+
+  /// Set when the user explicitly toggles subtitles, which suppresses
+  /// auto-select for the rest of this stream.
+  bool _subtitleChoiceIsManual = false;
+
+  /// Listener on the shared subtitle preferences, held so it can be detached
+  /// in [dispose] — the controller outlives this screen.
+  VoidCallback? _subtitleSettingsListener;
+
   // Subscription to the shared player's track stream. Held so it can be
   // cancelled on dispose — the player is a long-lived singleton, so an
   // uncancelled listener would leak this State across playback sessions.
@@ -121,6 +137,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _loadEpgInfo();
     _loadFavoriteState();
     _loadShowStreamUrl();
+    _applySubtitleSettings();
+  }
+
+  /// Push the stored subtitle preferences to mpv, and keep pushing them as the
+  /// user edits them.
+  ///
+  /// Needed on entry because the player is a singleton that may have been
+  /// started elsewhere (the inline preview) before these preferences were
+  /// loaded from disk.
+  void _applySubtitleSettings() {
+    final controller = ref.read(subtitleSettingsProvider);
+    _subtitleSettingsListener = () {
+      if (!mounted) return;
+      ref.read(playerServiceProvider).applySubtitleStyle(controller.settings);
+    };
+    controller.addListener(_subtitleSettingsListener!);
+    _subtitleSettingsListener!();
   }
 
   Future<void> _loadShowStreamUrl() async {
@@ -357,16 +390,78 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           player.state.track.subtitle.id != 'no' &&
           player.state.track.subtitle.id != 'auto';
     });
+    _maybeAutoEnableSubtitles();
+  }
+
+  /// Turn on the preferred subtitle track when the user asked for subtitles to
+  /// come up by themselves. Runs once per stream and never overrides a manual
+  /// choice.
+  Future<void> _maybeAutoEnableSubtitles() async {
+    if (_autoSubtitleDone || _subtitleChoiceIsManual) return;
+    if (_subtitleTracks.isEmpty) return;
+    final settings = ref.read(subtitleSettingsProvider).settings;
+    if (!settings.autoEnable) return;
+
+    _autoSubtitleDone = true;
+    final selected = await ref
+        .read(playerServiceProvider)
+        .selectPreferredSubtitle(settings.preferredLanguage);
+    if (!mounted || selected == null) return;
+    setState(() => _subtitlesEnabled = true);
   }
 
   void _toggleSubtitles() {
-    final player = ref.read(playerServiceProvider).player;
+    final playerService = ref.read(playerServiceProvider);
+    _subtitleChoiceIsManual = true;
     if (_subtitlesEnabled) {
-      player.setSubtitleTrack(SubtitleTrack.no());
+      playerService.player.setSubtitleTrack(SubtitleTrack.no());
       setState(() => _subtitlesEnabled = false);
-    } else if (_subtitleTracks.isNotEmpty) {
-      player.setSubtitleTrack(_subtitleTracks.first);
+      return;
+    }
+    if (_subtitleTracks.isEmpty) {
+      // Nothing to switch on. Open the picker instead of dead-ending: from
+      // there the user can attach a subtitle file or adjust styling, and it
+      // keeps the feature reachable with a remote (no long-press needed).
+      _showSubtitlePicker();
+      return;
+    }
+    // Honour the preferred language rather than blindly taking track 1.
+    final language =
+        ref.read(subtitleSettingsProvider).settings.preferredLanguage;
+    playerService.selectPreferredSubtitle(language);
+    setState(() => _subtitlesEnabled = true);
+  }
+
+  /// Let the user attach a subtitle file to the current stream. Useful for VOD
+  /// and recordings whose subtitles ship separately.
+  Future<void> _loadExternalSubtitle() async {
+    FilePickerResult? result;
+    try {
+      result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['srt', 'ass', 'ssa', 'vtt', 'sub', 'txt'],
+      );
+    } catch (e) {
+      debugPrint('[Player] Subtitle file picker failed: $e');
+    }
+    final path = result?.files.single.path;
+    if (path == null || !mounted) return;
+
+    _subtitleChoiceIsManual = true;
+    try {
+      await ref.read(playerServiceProvider).loadExternalSubtitle(path);
+      if (!mounted) return;
       setState(() => _subtitlesEnabled = true);
+      _loadTrackInfo();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not load subtitle file: $e'),
+          duration: const Duration(seconds: 3),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -377,11 +472,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF1A1A2E),
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.8,
+      ),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (ctx) {
-        return Padding(
+        return SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -402,6 +501,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                 ],
               ),
               const SizedBox(height: 8),
+              if (_subtitleTracks.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Text(
+                    'This stream has no subtitle tracks. You can still load a '
+                    'subtitle file.',
+                    style: TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                ),
               ListTile(
                 dense: true,
                 leading: Icon(
@@ -456,12 +564,54 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
                         )
                       : null,
                   onTap: () {
+                    _subtitleChoiceIsManual = true;
                     player.setSubtitleTrack(t);
                     setState(() => _subtitlesEnabled = true);
                     Navigator.of(ctx).pop();
                   },
                 );
               }),
+              const Divider(height: 12, color: Colors.white12),
+              ListTile(
+                dense: true,
+                leading: const Icon(
+                  Icons.note_add_outlined,
+                  color: Colors.white54,
+                  size: 20,
+                ),
+                title: const Text(
+                  'Load subtitle file…',
+                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+                subtitle: const Text(
+                  'SRT, ASS, VTT',
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _loadExternalSubtitle();
+                },
+              ),
+              ListTile(
+                dense: true,
+                leading: const Icon(
+                  Icons.tune_rounded,
+                  color: Colors.white54,
+                  size: 20,
+                ),
+                title: const Text(
+                  'Appearance & sync…',
+                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+                subtitle: const Text(
+                  'Size, colour, position, delay',
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  showSubtitleStyleSheet(context);
+                },
+              ),
             ],
           ),
         );
@@ -591,6 +741,23 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
       return KeyEventResult.handled;
     }
 
+    // C → toggle subtitles, Shift+C → pick a track / open styling. C follows
+    // the "closed caption" convention; S is already the search shortcut
+    // elsewhere in the app.
+    if (key == LogicalKeyboardKey.keyC) {
+      HardwareKeyboard.instance.isShiftPressed
+          ? _showSubtitlePicker()
+          : _toggleSubtitles();
+      _showControls();
+      return KeyEventResult.handled;
+    }
+
+    // Z / X → nudge subtitle timing (mpv's own bindings).
+    if (key == LogicalKeyboardKey.keyZ || key == LogicalKeyboardKey.keyX) {
+      _nudgeSubtitleDelay(key == LogicalKeyboardKey.keyZ ? -0.5 : 0.5);
+      return KeyEventResult.handled;
+    }
+
     // Select / Enter → toggle overlay
     if (key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.enter ||
@@ -668,6 +835,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
           .providerName(ch['providerId']?.toString() ?? '');
       _currentUrlIndex = 0;
       _showOverlay = true;
+      // A new stream brings its own tracks, so the auto-enable pass and any
+      // manual override from the previous channel no longer apply.
+      _autoSubtitleDone = false;
+      _subtitleChoiceIsManual = false;
+      _subtitleTracks = [];
+      _subtitlesEnabled = false;
     });
     final ch = widget.channels[_channelIndex];
     ref
@@ -682,6 +855,25 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     _autoHideOverlay();
     _loadEpgInfo();
     _loadFavoriteState();
+  }
+
+  /// Shift subtitle timing by [delta] seconds and confirm the new offset, since
+  /// the effect is otherwise invisible until the next line of dialogue.
+  Future<void> _nudgeSubtitleDelay(double delta) async {
+    final playerService = ref.read(playerServiceProvider);
+    final next = ((await playerService.getSubtitleDelay()) + delta)
+        .clamp(-30.0, 30.0);
+    await playerService.setSubtitleDelay(next);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Subtitle delay ${next >= 0 ? '+' : ''}${next.toStringAsFixed(1)}s',
+        ),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   void _adjustVolume(double delta) {
@@ -699,6 +891,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   @override
   void dispose() {
     _tracksSub?.cancel();
+    if (_subtitleSettingsListener != null) {
+      ref.read(subtitleSettingsProvider).removeListener(
+            _subtitleSettingsListener!,
+          );
+    }
     _overlayTimer?.cancel();
     _volumeTimer?.cancel();
     if (_isFullscreen) {
@@ -707,9 +904,15 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
     super.dispose();
   }
 
+  /// Vertical space the control bar occupies. Subtitles are pushed up by this
+  /// much while the overlay is visible. Matches the offset used by the stream
+  /// URL pill below.
+  static const double _controlBarHeight = 96;
+
   @override
   Widget build(BuildContext context) {
     final playerService = ref.watch(playerServiceProvider);
+    final subtitleSettings = ref.watch(subtitleSettingsProvider).settings;
 
     return Focus(
       autofocus: true,
@@ -742,10 +945,16 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                // Video — fill entire screen
+                // Video — fill entire screen. Subtitles are drawn by the
+                // Video widget's own subtitle view using the user's styling;
+                // while the control bar is up they are lifted clear of it so
+                // the chrome never sits on top of a line of dialogue.
                 Video(
                   controller: playerService.videoController,
                   controls: NoVideoControls,
+                  subtitleViewConfiguration: subtitleSettings.viewConfiguration(
+                    extraBottomPadding: _showOverlay ? _controlBarHeight : 0,
+                  ),
                 ),
 
                 // Centered buffering indicator — shown while the stream is

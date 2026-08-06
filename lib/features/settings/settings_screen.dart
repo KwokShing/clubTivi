@@ -16,6 +16,8 @@ import '../../core/weather_service.dart';
 import '../../data/datasources/local/database.dart' as db;
 import '../../data/services/backup_service.dart';
 import '../../data/services/epg_refresh_service.dart';
+import '../player/subtitle_settings.dart';
+import '../player/subtitle_style_sheet.dart';
 import '../providers/provider_manager.dart';
 import '../remote/web_remote_server.dart';
 import 'add_epg_source_dialog.dart';
@@ -291,6 +293,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     _UserAgentTile(),
                     _BufferSizeTile(),
                     _ShowStreamUrlTile(),
+                  ],
+                ),
+                _SettingsSection(
+                  title: 'Subtitles',
+                  children: [
+                    const _SubtitleAutoEnableTile(),
+                    const _SubtitleLanguageTile(),
+                    const _SubtitleAppearanceTile(),
                   ],
                 ),
                 _SettingsSection(
@@ -1496,6 +1506,95 @@ class _ShowStreamUrlTileState extends State<_ShowStreamUrlTile> {
         await prefs.setBool(_key, value);
         setState(() => _enabled = value);
       },
+    );
+  }
+}
+
+/// Turn on the preferred subtitle track as soon as a stream that has one
+/// starts, instead of requiring a press of CC every time.
+class _SubtitleAutoEnableTile extends ConsumerWidget {
+  const _SubtitleAutoEnableTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(subtitleSettingsProvider);
+    return SwitchListTile(
+      secondary: const Icon(Icons.closed_caption_rounded),
+      title: const Text('Show Subtitles Automatically'),
+      subtitle: const Text(
+        'Enable subtitles whenever a stream provides them',
+      ),
+      value: controller.settings.autoEnable,
+      onChanged: (value) =>
+          controller.update(controller.settings.copyWith(autoEnable: value)),
+    );
+  }
+}
+
+/// Which subtitle track to prefer when a stream ships several.
+class _SubtitleLanguageTile extends ConsumerWidget {
+  const _SubtitleLanguageTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.watch(subtitleSettingsProvider);
+    final settings = controller.settings;
+    return ListTile(
+      leading: const Icon(Icons.translate_rounded),
+      title: const Text('Subtitle Language'),
+      subtitle: Text(settings.languageLabel),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () async {
+        final picked = await showDialog<String>(
+          context: context,
+          builder: (ctx) => SimpleDialog(
+            title: const Text('Preferred Subtitle Language'),
+            children: [
+              RadioGroup<String>(
+                groupValue: settings.preferredLanguage,
+                onChanged: (v) => Navigator.pop(ctx, v),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final entry
+                        in SubtitleSettings.languageChoices.entries)
+                      RadioListTile<String>(
+                        title: Text(entry.key),
+                        value: entry.value,
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+        if (picked != null) {
+          await controller.update(settings.copyWith(preferredLanguage: picked));
+        }
+      },
+    );
+  }
+}
+
+/// Opens the same appearance panel the player uses, so styling is configured in
+/// one place and looks identical wherever it is opened from.
+class _SubtitleAppearanceTile extends ConsumerWidget {
+  const _SubtitleAppearanceTile();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(subtitleSettingsProvider).settings;
+    final renderer = settings.renderer == SubtitleRenderer.player
+        ? 'player-rendered'
+        : 'app-rendered';
+    return ListTile(
+      leading: const Icon(Icons.subtitles_rounded),
+      title: const Text('Subtitle Appearance'),
+      subtitle: Text(
+        '${settings.fontSize.round()}px • ${settings.colorLabel} • $renderer',
+      ),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => showSubtitleStyleSheet(context),
     );
   }
 }

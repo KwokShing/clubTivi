@@ -22,6 +22,7 @@ import '../../data/services/epg_refresh_service.dart';
 import '../../data/services/stream_alternatives_service.dart';
 import '../player/player_service.dart';
 import '../player/stream_info_badges.dart';
+import '../player/subtitle_settings.dart';
 import '../providers/provider_manager.dart';
 import '../shows/shows_providers.dart';
 import 'channel_debug_dialog.dart';
@@ -2472,6 +2473,14 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
             controller: playerService.videoController,
             controls: NoVideoControls,
             fit: BoxFit.contain,
+            // Same styling as the fullscreen player. SubtitleView scales text
+            // down for the smaller surface on its own; only the bottom margin
+            // needs capping so it doesn't eat the short preview.
+            subtitleViewConfiguration: ref
+                .watch(subtitleSettingsProvider)
+                .settings
+                .copyWith(bottomOffset: 8)
+                .viewConfiguration(),
           ),
           // Centered buffering indicator — shown while (re)buffering, hidden
           // the moment playback resumes (also shown in the inline/windowed

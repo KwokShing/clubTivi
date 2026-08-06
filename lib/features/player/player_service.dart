@@ -11,9 +11,17 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'adaptive_buffer.dart';
+import 'subtitle_settings.dart';
 
 /// Manages video playback.
 class PlayerService {
+  PlayerService() {
+    // Read subtitle preferences up front so every playback path — inline
+    // preview included — starts with the user's choice, not mpv's default of
+    // silently auto-selecting the first subtitle track.
+    _loadSubtitlePrefs();
+  }
+
   Player? _player;
   VideoController? _videoController;
   final AdaptiveBufferManager _bufferManager = AdaptiveBufferManager();
@@ -227,6 +235,19 @@ class PlayerService {
       return;
     }
 
+    // Re-assert subtitle handling: opening new media resets mpv's per-file
+    // subtitle state, and a stale sub-delay from the previous channel would
+    // otherwise desync the new one.
+    await setSubtitleDelay(0);
+    await applySubtitleStyle(subtitleSettings);
+    if (!subtitleSettings.autoEnable) {
+      // mpv defaults to `sid=auto`, which quietly turns on the first subtitle
+      // track. Left alone, subtitles would appear while the CC control still
+      // reads "off". Pin it off so the UI and what's on screen agree; the CC
+      // button and the auto-enable preference are the only ways in.
+      await player.setSubtitleTrack(SubtitleTrack.no());
+    }
+
     // Refine live vs VOD off the critical path.
     _refineStreamProfile(url);
 
@@ -384,6 +405,161 @@ class PlayerService {
   /// Number of audio tracks.
   Stream<int> get audioTrackCountStream =>
       player.stream.tracks.map((t) => t.audio.length);
+
+  // ── Subtitles ───────────────────────────────────────────────────────────
+
+  /// The style last handed to [applySubtitleStyle], re-applied after every
+  /// [play] because opening new media can reset mpv's subtitle properties.
+  SubtitleSettings? _subtitleStyle;
+
+  /// The subtitle preferences in effect, falling back to defaults until prefs
+  /// have been read or the UI has pushed a change.
+  SubtitleSettings get subtitleSettings =>
+      _subtitleStyle ?? const SubtitleSettings();
+
+  Future<void> _loadSubtitlePrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // Don't clobber a style the UI already pushed while prefs were loading.
+      _subtitleStyle ??= SubtitleSettings.fromPrefs(prefs);
+    } catch (_) {
+      // Subtitles are a display preference; defaults are an acceptable result.
+    }
+  }
+
+  /// Stream of the current subtitle lines (empty while nothing is displayed).
+  Stream<List<String>> get subtitleStream => player.stream.subtitle;
+
+  /// Number of selectable subtitle tracks on the current stream (mpv's `auto`
+  /// and `no` pseudo-tracks excluded).
+  Stream<int> get subtitleTrackCountStream => player.stream.tracks.map(
+        (t) => t.subtitle.where((s) => s.id != 'auto' && s.id != 'no').length,
+      );
+
+  /// Push [settings] down to mpv.
+  ///
+  /// Only meaningful for [SubtitleRenderer.player]: it flips `sub-visibility`
+  /// on so mpv draws into the video (the one way to see bitmap DVB/PGS
+  /// subtitles, which carry no text for the Flutter renderer) and maps the
+  /// style options onto mpv's equivalents. With [SubtitleRenderer.flutter] the
+  /// mpv overlay is switched back off so the two renderers never stack.
+  ///
+  /// `sub-text` keeps updating either way, so the Flutter renderer works
+  /// regardless of `sub-visibility`.
+  Future<void> applySubtitleStyle(SubtitleSettings settings) async {
+    _subtitleStyle = settings;
+    // Don't spin up mpv just to store a preference — the Settings screen calls
+    // this while nothing is playing. [play] re-applies the cached style.
+    if (_player == null) return;
+    final np = player.platform;
+    if (np is! native_player.NativePlayer) return;
+
+    final mpvDraws = settings.renderer == SubtitleRenderer.player;
+    await _set(np, 'sub-visibility', mpvDraws ? 'yes' : 'no');
+    // Pick up `movie.srt` next to `movie.mkv` for local files and VOD.
+    await _set(np, 'sub-auto', 'fuzzy');
+    if (!mpvDraws) return;
+
+    // mpv sizes subtitles relative to its own default, so express the chosen
+    // pixel size as a scale factor against the widget renderer's default.
+    final scale = (settings.fontSize / 32.0).clamp(0.4, 2.5);
+    await _set(np, 'sub-scale', scale.toStringAsFixed(2));
+    await _set(np, 'sub-color', _mpvColor(settings.colorValue));
+    await _set(np, 'sub-bold', settings.bold ? 'yes' : 'no');
+    // mpv 0.38 renamed sub-border-* to sub-outline-*; the old names remain as
+    // deprecated aliases. Set both so the outline works on whichever libmpv
+    // build ships with media_kit — unknown properties are ignored by [_set].
+    final border = settings.outline ? '2.5' : '0';
+    await _set(np, 'sub-border-size', border);
+    await _set(np, 'sub-outline-size', border);
+    await _set(np, 'sub-border-color', '#FF000000');
+    await _set(np, 'sub-outline-color', '#FF000000');
+    await _set(
+      np,
+      'sub-back-color',
+      _mpvColor(0x000000, alpha: settings.backgroundOpacity),
+    );
+    // sub-pos is a percentage of frame height measured from the top, so a
+    // larger bottom offset means a smaller value.
+    final posFromBottom =
+        (settings.bottomOffset / 1080.0 * 100).clamp(0.0, 40.0);
+    await _set(np, 'sub-pos', (100 - posFromBottom).round().toString());
+  }
+
+  /// Format an ARGB int as mpv's `#AARRGGBB` colour literal.
+  static String _mpvColor(int argb, {double? alpha}) {
+    final a = ((alpha ?? 1.0).clamp(0.0, 1.0) * 255).round();
+    final rgb = argb & 0xFFFFFF;
+    return '#${a.toRadixString(16).padLeft(2, '0')}'
+            '${rgb.toRadixString(16).padLeft(6, '0')}'
+        .toUpperCase();
+  }
+
+  /// Shift subtitles in time relative to the video, in seconds. Positive
+  /// values show them later.
+  Future<void> setSubtitleDelay(double seconds) async {
+    if (_player == null) return;
+    final np = player.platform;
+    if (np is native_player.NativePlayer) {
+      await _set(np, 'sub-delay', seconds.toStringAsFixed(2));
+    }
+  }
+
+  /// Current subtitle delay in seconds, or 0 when it can't be read.
+  Future<double> getSubtitleDelay() async {
+    if (_player == null) return 0.0;
+    final value = await getMpvProperty('sub-delay');
+    return double.tryParse(value ?? '') ?? 0.0;
+  }
+
+  /// Load and select an external subtitle file (`.srt`, `.ass`, `.vtt`, …).
+  ///
+  /// Goes through [Player.setSubtitleTrack] so media_kit stays the owner of
+  /// the selected-track state and its subtitle-text stream keeps flowing.
+  Future<void> loadExternalSubtitle(String path, {String? title}) async {
+    final uri = Uri.tryParse(path);
+    final isRemote = uri != null && (uri.isScheme('http') || uri.isScheme('https'));
+    await player.setSubtitleTrack(
+      SubtitleTrack.uri(
+        isRemote ? path : Uri.file(path).toString(),
+        title: title,
+      ),
+    );
+    if (_subtitleStyle != null) await applySubtitleStyle(_subtitleStyle!);
+  }
+
+  /// Pick the subtitle track that best matches [preferredLanguage] (ISO 639
+  /// code) and select it. Falls back to the first available track when the
+  /// preference is empty or unmatched. Returns the selected track, or null when
+  /// the stream carries no subtitles.
+  Future<SubtitleTrack?> selectPreferredSubtitle(
+    String preferredLanguage,
+  ) async {
+    final tracks = player.state.tracks.subtitle
+        .where((t) => t.id != 'auto' && t.id != 'no')
+        .toList();
+    if (tracks.isEmpty) return null;
+
+    SubtitleTrack? match;
+    if (preferredLanguage.isNotEmpty) {
+      final wanted = preferredLanguage.toLowerCase();
+      for (final t in tracks) {
+        final lang = (t.language ?? '').toLowerCase();
+        final title = (t.title ?? '').toLowerCase();
+        // Stream metadata is inconsistent: `eng`, `en`, `English (CC)` all
+        // occur, so accept a prefix match on either field.
+        if (lang.startsWith(wanted) ||
+            wanted.startsWith(lang) && lang.isNotEmpty ||
+            title.contains(wanted)) {
+          match = t;
+          break;
+        }
+      }
+    }
+    final chosen = match ?? tracks.first;
+    await player.setSubtitleTrack(chosen);
+    return chosen;
+  }
 
   /// Stop playback.
   Future<void> stop() async {
