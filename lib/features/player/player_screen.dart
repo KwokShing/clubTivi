@@ -111,6 +111,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// in [dispose] — the controller outlives this screen.
   VoidCallback? _subtitleSettingsListener;
 
+  /// The controller the listener is attached to, kept as a direct reference.
+  /// [dispose] must not go through `ref`: Riverpod invalidates it before
+  /// `dispose` runs, and the resulting throw would abort the rest of teardown.
+  SubtitleSettingsController? _subtitleSettingsController;
+
   // Subscription to the shared player's track stream. Held so it can be
   // cancelled on dispose — the player is a long-lived singleton, so an
   // uncancelled listener would leak this State across playback sessions.
@@ -148,9 +153,10 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
   /// loaded from disk.
   void _applySubtitleSettings() {
     final controller = ref.read(subtitleSettingsProvider);
+    final playerService = ref.read(playerServiceProvider);
+    _subtitleSettingsController = controller;
     _subtitleSettingsListener = () {
-      if (!mounted) return;
-      ref.read(playerServiceProvider).applySubtitleStyle(controller.settings);
+      playerService.applySubtitleStyle(controller.settings);
     };
     controller.addListener(_subtitleSettingsListener!);
     _subtitleSettingsListener!();
@@ -813,7 +819,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
         _exitPlayer();
         return;
       }
-      FullscreenHelper.exitFullscreen();
+      await FullscreenHelper.exitFullscreen();
       if (mounted) setState(() => _isFullscreen = false);
       return;
     }
@@ -890,17 +896,21 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen> {
 
   @override
   void dispose() {
+    // Restore the window first. It is the one piece of teardown with a
+    // consequence the user cannot undo — a window left in borderless
+    // fullscreen has no title bar to drag and cannot be resized — so it must
+    // not sit behind anything that might throw.
+    if (_isFullscreen) {
+      // A platform call that outlives this State, and `dispose` cannot await.
+      FullscreenHelper.exitFullscreen();
+    }
     _tracksSub?.cancel();
     if (_subtitleSettingsListener != null) {
-      ref.read(subtitleSettingsProvider).removeListener(
-            _subtitleSettingsListener!,
-          );
+      // Uses the saved reference, never `ref` — see the field's doc comment.
+      _subtitleSettingsController?.removeListener(_subtitleSettingsListener!);
     }
     _overlayTimer?.cancel();
     _volumeTimer?.cancel();
-    if (_isFullscreen) {
-      FullscreenHelper.exitFullscreen();
-    }
     super.dispose();
   }
 
