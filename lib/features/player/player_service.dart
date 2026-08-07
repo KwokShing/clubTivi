@@ -11,6 +11,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'adaptive_buffer.dart';
+import 'hls_subtitle_loader.dart';
 import 'subtitle_settings.dart';
 
 /// Manages video playback.
@@ -26,6 +27,9 @@ class PlayerService {
   VideoController? _videoController;
   final AdaptiveBufferManager _bufferManager = AdaptiveBufferManager();
   StreamSubscription<Tracks>? _tracksSub;
+
+  HlsSubtitleLoader? _hlsSubtitles;
+  Timer? _hlsSubtitleProbe;
 
   // Buffer health tracking (persists across info dialog opens)
   final List<bool> bufferHistory = List.filled(60, false, growable: true);
@@ -283,6 +287,28 @@ class PlayerService {
 
     // Refine live vs VOD off the critical path.
     _refineStreamProfile(url);
+
+    // Pick up an HLS subtitle rendition that libmpv can't see (see
+    // HlsSubtitleLoader). Deferred so mpv has finished enumerating its own
+    // tracks first — the loader only steps in when there is no native track.
+    _hlsSubtitleProbe?.cancel();
+    _hlsSubtitleProbe = Timer(const Duration(seconds: 4), () async {
+      if (_currentUrl != url) return;
+      final headers = await _probeHeaders();
+      final loader = _hlsSubtitles ??= HlsSubtitleLoader(player);
+      await loader.start(
+        url,
+        headers: headers.isEmpty ? null : headers,
+        // Show these straight away rather than deferring to the "show
+        // subtitles automatically" preference. That preference exists to stop
+        // mpv silently enabling an embedded track nobody asked for; this path
+        // is the opposite case — the stream advertises subtitles that the
+        // player could not otherwise show at all, so going to the trouble of
+        // fetching them and then leaving them switched off is not useful.
+        // Turning them off with CC still sticks across refreshes.
+        autoSelect: true,
+      );
+    });
 
     // ffmpeg reconnect handles most streams. For streams that truly hit EOF
     // (server closes connection), reload via loadfile to keep the last frame
@@ -594,9 +620,15 @@ class PlayerService {
     return chosen;
   }
 
+  /// Whether an HLS subtitle rendition is being supplied by [HlsSubtitleLoader]
+  /// because libmpv did not expose one itself.
+  bool get hasInjectedSubtitles => _hlsSubtitles?.hasCues ?? false;
+
   /// Stop playback.
   Future<void> stop() async {
     _bufferManager.stop();
+    _hlsSubtitleProbe?.cancel();
+    _hlsSubtitles?.stop();
     _cancelLoadTimeout();
     // Tear down buffer-tracking so its timer/subscription don't keep firing
     // (and keep the player's stream alive) after playback has stopped.
@@ -791,6 +823,8 @@ class PlayerService {
   void dispose() {
     try {
       _bufferManager.stop();
+      _hlsSubtitleProbe?.cancel();
+      _hlsSubtitles?.stop();
       _tracksSub?.cancel();
       _bufferTrackSub?.cancel();
       _completedSub?.cancel();
